@@ -1,3 +1,4 @@
+[**EDIT - 18.06.25**] Long time no see! If you're reading this, just keep in mind: QuickADB isn't dead and a new major update should arrive soon.
 
    ![logo](https://github.com/user-attachments/assets/70412b0d-d1f6-432e-aaf4-32e535f2f5f2) 
 
