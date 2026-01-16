@@ -1,0 +1,241 @@
+/* Palette:
+   main_bg:       #151c2c
+   secondary_bg:  #1b223a
+   tertiary_bg:   #222f4b
+   misc:          #2a395e
+   hover:         #404f7a
+   accent:        #58a6ff
+   text:          #ffffff
+   secondary_txt: #8b949e
+   button_txt:    #ffffff
+*/
+
+QMainWindow, QWidget {
+    background-color: #151c2c;
+    color: #ffffff;
+}
+
+QFrame {
+    background-color: #1b223a;
+    border-radius: 6px;
+}
+
+QLabel {
+    color: #ffffff;
+    background-color: transparent;
+}
+
+QPushButton {
+    background-color: #222f4b;
+    color: #ffffff;
+    border-radius: 6px;
+    border: 1px solid #202c4d;
+    padding: 5px 10px;
+}
+
+QPushButton:hover {
+    background-color: #404f7a;
+}
+
+QPushButton:pressed {
+    background-color: #58a6ff;
+}
+
+QPushButton:disabled {
+    background-color: #2d333b;
+    color: #8b949e;
+}
+
+QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: #222f4b;
+    color: #ffffff;
+    border: 1px solid #202c4d;
+    border-radius: 6px;
+    padding: 5px;
+}
+
+QTreeView {
+    background-color: #1b223a;
+    alternate-background-color: #222f4b;
+    color: #ffffff;
+    border: 1px solid #222f4b;
+    border-radius: 6px;
+    selection-background-color: #58a6ff;
+    selection-color: #ffffff;
+    padding: 3px;
+}
+
+QTreeView::item {
+    padding: 3px;
+}
+
+QTreeView::item:selected {
+    background-color: #58a6ff;
+    color: #ffffff;
+}
+
+QHeaderView, QHeaderView::section {
+    background-color: #1b223a;
+    color: #ffffff;
+    border: 1px solid #2a395e;
+    padding: 4px;
+}
+
+QTableWidget {
+    gridline-color: #2a395e;
+    background-color: #1b223a;
+    color: #ffffff;
+    selection-background-color: #404f7a;
+    selection-color: #ffffff;
+}
+
+QTableCornerButton::section {
+    background-color: transparent;
+    border: none;
+}
+
+QScrollArea {
+    background-color: transparent;
+    border: none;
+}
+
+QScrollBar:vertical {
+    background: #1b223a;
+    width: 10px;
+}
+
+QScrollBar::handle:vertical {
+    background: #2a395e;
+    min-height: 20px;
+    border-radius: 5px;
+    border: 1px solid #1f2742;
+}
+
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: #151c2c;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+QComboBox {
+    background-color: #222f4b;
+    color: #ffffff;
+    border-radius: 6px;
+    padding: 5px;
+}
+
+QComboBox::drop-down {
+    border: none;
+    background-color: #404f7a;
+}
+
+QProgressBar {
+    border: 1px solid #2a395e;
+    border-radius: 4px;
+    text-align: center;
+    background-color: #1b223a;
+}
+
+QProgressBar::chunk {
+    background-color: #58a6ff;
+    width: 10px;
+    margin: 1px;
+    border-radius: 3px;
+}
+
+QSplitter::handle {
+    background-color: #222f4b;
+    height: 1px;
+}
+
+QToolBar {
+    background-color: #1b223a;
+    spacing: 5px;
+    border: none;
+}
+
+QStatusBar {
+    background-color: #1b223a;
+    color: #ffffff;
+}
+
+QMessageBox, QFileDialog {
+    background-color: #151c2c;
+    color: #ffffff;
+}
+
+QMessageBox QLabel {
+    background: transparent;
+    color: #ffffff;
+}
+
+QMessageBox QPushButton {
+    min-width: 80px;
+}
+
+QCheckBox {
+    background-color: #222f4b;
+    color: #ffffff;
+    border-radius: 6px;
+    border: 1px solid #202c4d;
+    padding: 4px 20px;
+}
+
+QDialog {
+    background-color: #151c2c;
+    color: #ffffff;
+}
+
+QDialog QTextEdit {
+    background-color: #222f4b;
+    color: #ffffff;
+    border: 1px solid #15212e;
+    border-radius: 6px;
+}
+
+QDialog QPushButton {
+    background-color: #222f4b;
+    color: #ffffff;
+    border-radius: 6px;
+    border: 1px solid #202c4d;
+    padding: 5px 10px;
+    min-width: 80px;
+}
+
+QDialog QPushButton:hover {
+    background-color: #404f7a;
+}
+
+QDialog QPushButton:pressed {
+    background-color: #58a6ff;
+}
+
+QProgressDialog {
+    background-color: #151c2c;
+    color: #ffffff;
+    border: 1px solid #222f4b;
+    border-radius: 8px;
+}
+
+QProgressDialog QLabel {
+    color: #ffffff;
+    padding: 10px;
+    font-size: 13px;
+}
+
+/* Scoped overrides */
+
+QWidget#TBspacer {
+    background-color: #1b223a;
+}
+
+QLineEdit#PathBar, QLineEdit#SearchBar {
+    background-color: #222f4b;
+}
+
+
+
