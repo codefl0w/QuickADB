@@ -1,4 +1,11 @@
-[**EDIT - 18.06.25**] Long time no see! If you're reading this, just keep in mind: QuickADB isn't dead and a new major update should arrive soon.
+[**EDIT - 16.01.26**] It's been insanely long since QuickADB was last updated. This happened because I wanted V4 to be extraordinary, so I kept polishing and adding more, and polishing more, and adding more, until it started feeling like this would go on forever. I don't have much time to work on everything right now but I don't want to keep anyone waiting any longer, so I pushed the current version of the code.
+The code still needs quite some polishing and not everything is completed, so I won't be uploading executables for now. 
+
+To test, download the latest platform-tools for your OS and put it in the root of QuickADB, then run /main/quickadb.py. All 3 major operating systems should run QuickADB perfectly, though I don't have a Mac to test.
+Report any problems by creating an issue.
+
+What's new: basically everything. QuickADB was rebuilt from the ground using PyQt6 this time, with proper threading in mind. Everything is a lot smoother and useful now. 
+
 
    ![logo](https://github.com/user-attachments/assets/70412b0d-d1f6-432e-aaf4-32e535f2f5f2) 
 
