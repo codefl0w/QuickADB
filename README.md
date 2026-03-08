@@ -21,7 +21,7 @@ A powerful GUI wrapper for ADB and Fastboot, built for Android developers and po
 - [Building from Source](#building-from-source)
 - [Usage](#usage)
 - [Features](#features)
-- [Giving Root Permissions](#permissions--root)
+- [Giving Root Permissions](#giving-root-permissions)
 - [Changelog](#changelog)
 - [Contributing](#contributing)
 - [Donate](#donate)
