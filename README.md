@@ -31,7 +31,7 @@ A powerful GUI wrapper for ADB and Fastboot, built for Android developers and po
 
 ## Overview
 
-QuickADB is a GUI wrapper for ADB and Fastboot that eliminates the need to memorize or type commands manually. 
+QuickADB is a portable GUI wrapper for ADB and Fastboot that eliminates the need to memorize or type commands manually. With its powerful features, you can tweak many settings and change any files on your device without typing a single line. This makes it a perfect tool for everyone, whether you are a beginner or an experienced developer.
 
 > [!NOTE]
 > QuickADB has been completely rebuilt. To see the old changelog, view [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md).
