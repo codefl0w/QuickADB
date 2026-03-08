@@ -40,7 +40,10 @@ QuickADB is a GUI wrapper for ADB and Fastboot that eliminates the need to memor
 
 ## Screenshots
 
-> Screenshots coming soon.
+
+<img width="2000" height="1500" alt="showcase" src="https://github.com/user-attachments/assets/59841fd7-ec8f-4618-a31d-a9a196a38ed1" />
+
+
 
 ---
 
