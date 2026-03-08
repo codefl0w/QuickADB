@@ -175,6 +175,11 @@ Please follow the existing code style and make sure the code runs on at least on
 
 If QuickADB has been useful to you, please consider supporting its development via Buy Me a Coffee or GitHub Sponsors.
 
+<a href="https://buymeacoffee.com/fl0w" target="_blank" rel="noopener noreferrer">
+  <img width="350" alt="yellow-button" src="https://github.com/user-attachments/assets/2e6d44c8-9640-4cb3-bcc8-989595d6b7e9"/>
+</a>
+
+
 
 ---
 
