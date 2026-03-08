@@ -31,12 +31,14 @@ A powerful GUI wrapper for ADB and Fastboot, built for Android developers and po
 
 ## Overview
 
-QuickADB is a portable GUI wrapper for ADB and Fastboot that eliminates the need to memorize or type commands manually. With its powerful features, you can tweak many settings and change any files on your device without typing a single line. This makes it a perfect tool for everyone, whether you are a beginner or an experienced developer.
+QuickADB is a portable GUI wrapper for ADB and Fastboot that eliminates the need to memorize or type commands manually. With its powerful features, you can tweak many settings and change any files on your device without typing a single line. Whether you are a beginner or an experienced developer, QuickADB makes ADB workflows a lot faster and simpler.
 
 > [!NOTE]
 > QuickADB has been completely rebuilt. To see the old changelog, view [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md).
 
 ---
+
+
 
 ## Screenshots
 
@@ -49,11 +51,13 @@ QuickADB is a portable GUI wrapper for ADB and Fastboot that eliminates the need
 
 ## Platform Support
 
-| Platform | Supported | Notes                    |
-|----------|-----------|--------------------------|
-| Windows  | Yes       | Primary target           |
-| Linux    | Yes       | Some libs may mismatch with your distro and cause issues. If so, create an issue  |
-| macOS    | Yes       | Untested, please make sure to provide feedback        |
+| Platform | Supported          | Notes                                                                            |
+|----------|--------------------|----------------------------------------------------------------------------------|
+| Windows  | Yes                | Primary target                                                                   |
+| Linux    | Yes                | Some libs may mismatch with your distro and cause issues. If so, create an issue |
+| macOS    | Experimental       | Darwin systems are supported but untested. Testing and feedback required         |
+
+The latest source is built into executables for all three platforms.
 
 ---
 
@@ -165,7 +169,9 @@ Please follow the existing code style and make sure the code runs on at least on
 
 ## Credits
 
-- [payload-dumper-go](https://github.com/ssut/payload-dumper-go) by ssut — Payload.bin extraction
+- [payload-dumper-go](https://github.com/ssut/payload-dumper-go) by ssut — payload.bin extraction
+- [SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools#downloads) by Google - ADB and fastboot binaries
+- [PyQt6](https://www.riverbankcomputing.com/software/pyqt) by Riverbank Computing - Python adaptation of Qt6
 
 
 ---
