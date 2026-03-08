@@ -1,11 +1,11 @@
 <img width="500" height="125" alt="QuickADB Logo" src="https://github.com/user-attachments/assets/2531e507-63f1-4b23-b48e-ad4edd99d6d9" />
 
-A powerful GUI wrapper for ADB and Fastboot, built for Android developers and power users.
+A powerful GUI wrapper for ADB and Fastboot, built for Android developers and power users. Focused on reliability and speed, it provides one-click flows for common device tasks while keeping advanced tools available for power users.
 
 
 ![Downloads](https://codefl0w.xyz/gh-boards/out/codefl0w/badge/QuickADB/badge_downloads_2.svg)
 ![Stars](https://codefl0w.xyz/gh-boards/out/codefl0w/badge/QuickADB/badge_stars_2.svg)
-[![Platform](https://codefl0w.xyz/gh-boards/out/codefl0w/profile/badge_custom.svg)]
+![Platform](https://codefl0w.xyz/gh-boards/out/codefl0w/profile/badge_custom.svg)
 [![License](https://codefl0w.xyz/gh-boards/out/codefl0w/badge/QuickADB/badge_license_2.svg)](LICENSE)
 ![Workflow](https://codefl0w.xyz/gh-boards/out/codefl0w/badge/QuickADB/badge_workflow_2_latest.svg)
 
