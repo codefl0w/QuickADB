@@ -129,7 +129,7 @@ A custom terminal with autocomplete support. Search for keywords in output, expo
 
 ---
 
-## Permissions & Root
+## Giving Root Permissions
 
 Features that require root access are marked with a `#` icon within the application. No root is required for standard ADB and Fastboot operations.
 
