@@ -159,7 +159,7 @@ Contributions are welcome. Please open an issue before submitting a pull request
 4. Open a pull request against main
 ```
 
-Please follow the existing code style and include relevant tests where applicable.
+Please follow the existing code style and make sure the code runs on at least one platform.
 
 ---
 
