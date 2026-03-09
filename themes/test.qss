@@ -6,6 +6,8 @@
     accent:        #509040   // Forest Green for highlights and accents
     text:          #333333   // Deep Charcoal for primary text
     secondary_txt: #8A8A83   // Warm Grey for secondary text
+    quickadb_log_primary:   #333333
+    quickadb_log_secondary: #8A8A83
     button_txt:    #FFFFFF   // White text on accent/dark buttons
 */
 

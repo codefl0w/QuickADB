@@ -1,5 +1,5 @@
 '''
-Lists apps and sorts them by their package names. Can also sort per app type (user / system).
+appmanager.py - Lists apps and sorts them by their package names. Can also sort per app type (user / system).
 Lets the user select and delete or disable / enable apps, take APK backups of selected apps and restore them,
 create and use presets and manage app permissions.
 
@@ -14,7 +14,6 @@ import re
 import tempfile
 import shutil
 import zipfile
-import threading
 import subprocess
 import json
 import concurrent.futures
@@ -22,18 +21,19 @@ from typing import List
 
 from util.thememanager import ThemeManager
 
-script_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = os.path.dirname(script_dir)
-sys.path.insert(0, root_dir)
+from util.resource import get_root_dir, resource_path, resolve_platform_tool
+root_dir = get_root_dir()
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QSortFilterProxyModel, QDir
-from PyQt6.QtGui import QIcon, QStandardItemModel, QStandardItem, QFont
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSortFilterProxyModel, QDir
+from PyQt6.QtGui import QStandardItemModel, QStandardItem
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QTextEdit, QTreeView, QFrame, QHeaderView,
-    QMessageBox, QFileDialog, QLineEdit, QDialog, QCheckBox, QDialogButtonBox,
-    QComboBox, QTabWidget, QGroupBox, QListWidget, QMenu, QToolButton,
-    QProgressBar, QScrollArea, QListWidgetItem
+    QPushButton, QLabel, QTextEdit, QTreeView, QHeaderView,
+    QMessageBox, QFileDialog, QLineEdit, QDialog, QDialogButtonBox,
+    QComboBox, QTabWidget, QListWidget,
+    QListWidgetItem
 )
 
 
@@ -41,6 +41,7 @@ class AppManagerWorker(QThread):
     """Worker thread for handling long-running ADB operations."""
     finished = pyqtSignal()
     log_message = pyqtSignal(str)
+    status_message = pyqtSignal(str, int)
     apps_loaded = pyqtSignal(list)
     app_details_loaded = pyqtSignal(dict)
     permissions_loaded = pyqtSignal(list, list, list)
@@ -51,7 +52,7 @@ class AppManagerWorker(QThread):
         self.operation = operation
         self.kwargs = kwargs
         self.parent = parent
-        # ROBUSTNESS: Get path from parent instance, not a global variable.
+
         self.platform_tools_path = parent.platform_tools_path if parent else "."
 
     def run(self):
@@ -79,9 +80,38 @@ class AppManagerWorker(QThread):
     
     def _run_adb_command(self, command_args, text=True):
         """Helper to run an ADB command consistently."""
-        adb_exe = os.path.join(self.platform_tools_path, 'adb')
+        adb_exe = resolve_platform_tool(self.platform_tools_path, 'adb')
         full_command = [adb_exe] + command_args
-        return subprocess.run(full_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=text, check=False)
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = (
+                subprocess.CREATE_NEW_PROCESS_GROUP |
+                subprocess.CREATE_NO_WINDOW
+            )
+        return subprocess.run(
+            full_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=creationflags,
+            text=text,
+            check=False
+        )
+
+    def _emit_status(self, message: str, timeout_ms: int = 5000):
+        self.status_message.emit(message, timeout_ms)
+
+    @staticmethod
+    def _derive_app_name(package_name: str) -> str:
+        """Derive a human-readable app name from a package name. In reality, this just filters out the last word from the package name and should be changed."""
+        return package_name.split('.')[-1].replace('_', ' ').capitalize()
+
+    @staticmethod
+    def _parse_permissions(section_header: str, text: str) -> list:
+        """Parse a named permission section from dumpsys package output."""
+        match = re.search(section_header + r':\n((?:.+?\n)+?)(?:\n\S|\Z)', text, re.MULTILINE)
+        if not match:
+            return []
+        return [line.strip() for line in match.group(1).strip().splitlines() if line.strip()]
 
     def load_apps(self):
         """Load all installed apps from the device."""
@@ -111,36 +141,35 @@ class AppManagerWorker(QThread):
             self.log_message.emit(f"Error loading apps: {e}")
 
     def parse_app_info(self, package_info: str):
-            """
-            Parses package information from 'pm list packages -f' output,
-            correctly handling complex paths for user apps.
-            """
-            try:
-                # The package name is always the last segment after the final '='.
-                parts = package_info.split('=')
-                package_name = parts[-1].strip()
-    
-                # The path is everything before the last '='.
-                path_part = '='.join(parts[:-1])
-                file_path = path_part.replace("package:", "").strip()
-    
-                if package_name:
-                    app_type = "Unknown"
-                    if "/data/app/" in file_path:
-                        app_type = "User App"
-                    elif "/system/app/" in file_path or "/system/priv-app/" in file_path:
-                        app_type = "System App"
-                    elif "/vendor/" in file_path:
-                        app_type = "Vendor App"
-    
-                    # Use the last part of the package name as a readable app name
-                    app_name = package_name.split('.')[-1].replace('_', ' ').capitalize()
-                    return app_name, package_name, app_type
-    
-            except Exception as e:
-                self.log_message.emit(f"Error parsing package info '{package_info}': {e}")
-    
-            return None, None, None
+        """
+        Parses package information from 'pm list packages -f' output
+        """
+        try:
+            # The package name is always the last segment after the final '='.
+            parts = package_info.split('=')
+            package_name = parts[-1].strip()
+
+            # The path is everything before the last '='.
+            path_part = '='.join(parts[:-1])
+            file_path = path_part.replace("package:", "").strip()
+
+            if package_name:
+                app_type = "Unknown"
+                if "/data/app/" in file_path:
+                    app_type = "User App"
+                elif "/system/app/" in file_path or "/system/priv-app/" in file_path:
+                    app_type = "System App"
+                elif "/vendor/" in file_path:
+                    app_type = "Vendor App"
+
+                # Use the last part of the package name as a readable app name
+                app_name = self._derive_app_name(package_name)
+                return app_name, package_name, app_type
+
+        except Exception as e:
+            self.log_message.emit(f"Error parsing package info '{package_info}': {e}")
+
+        return None, None, None
 
     def fetch_app_details(self, package_name):
         """Fetch detailed information about an app."""
@@ -151,14 +180,19 @@ class AppManagerWorker(QThread):
                 return
 
             output = result.stdout
+            _m_code_path    = re.search(r'codePath=(.*)', output)
+            _m_version_name = re.search(r'versionName=([\S]+)', output)
+            _m_version_code = re.search(r'versionCode=(\d+)', output)
+            _m_min_sdk      = re.search(r'minSdk=(\d+)', output)
+            _m_target_sdk   = re.search(r'targetSdk=(\d+)', output)
             details = {
-                "App Name": package_name.split('.')[-1].replace("_", " ").capitalize(),
+                "App Name":     self._derive_app_name(package_name),
                 "Package Name": package_name,
-                "App Path": (re.search(r'codePath=(.*)', output).group(1) if re.search(r'codePath=(.*)', output) else "Unknown"),
-                "App Version": f"{(re.search(r'versionName=([\S]+)', output).group(1) if re.search(r'versionName=([\S]+)', output) else '?')} "
-                               f"(Code: {(re.search(r'versionCode=(\d+)', output).group(1) if re.search(r'versionCode=(\d+)', output) else '?')})",
-                "Minimum SDK": (re.search(r'minSdk=(\d+)', output).group(1) if re.search(r'minSdk=(\d+)', output) else "Unknown"),
-                "Target SDK": (re.search(r'targetSdk=(\d+)', output).group(1) if re.search(r'targetSdk=(\d+)', output) else "Unknown"),
+                "App Path":     _m_code_path.group(1)    if _m_code_path    else "Unknown",
+                "App Version":  f"{_m_version_name.group(1) if _m_version_name else '?'} "
+                                f"(Code: {_m_version_code.group(1) if _m_version_code else '?'})",
+                "Minimum SDK":  _m_min_sdk.group(1)      if _m_min_sdk      else "Unknown",
+                "Target SDK":   _m_target_sdk.group(1)   if _m_target_sdk   else "Unknown",
             }
             self.app_details_loaded.emit(details)
         except Exception as e:
@@ -167,24 +201,20 @@ class AppManagerWorker(QThread):
     def fetch_permissions(self, package_name):
         """Fetch permissions for the specified package."""
         try:
+            self._emit_status(f"Fetching permissions for {package_name}...", 0)
             result = self._run_adb_command(['shell', f'dumpsys package {package_name}'])
             if result.returncode != 0 or not result.stdout.strip():
                 self.log_message.emit(f"Failed to fetch permissions for {package_name}.")
+                self._emit_status(f"Failed to fetch permissions for {package_name}", 5000)
                 return
 
             output = result.stdout
             
-            def parse_permissions(section_header, text):
-                match = re.search(section_header + r':\n((?:.+?\n)+?)(?:\n\S|\Z)', text, re.MULTILINE)
-                if not match: return []
-                lines = match.group(1).strip().splitlines()
-                return [line.strip() for line in lines if line.strip()]
-
-            declared_permissions = [p.split(':')[0] for p in parse_permissions(r'declared permissions', output)]
-            requested_permissions = parse_permissions(r'requested permissions', output)
+            declared_permissions = [p.split(':')[0] for p in self._parse_permissions(r'declared permissions', output)]
+            requested_permissions = self._parse_permissions(r'requested permissions', output)
             
             runtime_permissions = []
-            runtime_section = parse_permissions(r'runtime permissions', output)
+            runtime_section = self._parse_permissions(r'runtime permissions', output)
             for line in runtime_section:
                 match = re.match(r"(.+?): granted=(true|false)", line)
                 if match:
@@ -194,9 +224,15 @@ class AppManagerWorker(QThread):
             self.log_message.emit(f"Fetched {len(declared_permissions)} declared, "
                                  f"{len(requested_permissions)} requested, "
                                  f"and {len(runtime_permissions)} runtime permissions.")
+            self._emit_status(
+                f"Fetched permissions for {package_name} "
+                f"({len(runtime_permissions)} runtime, {len(requested_permissions)} requested).",
+                5000
+            )
             self.permissions_loaded.emit(declared_permissions, requested_permissions, runtime_permissions)
         except Exception as e:
             self.log_message.emit(f"Error fetching permissions for {package_name}: {e}")
+            self._emit_status(f"Error fetching permissions for {package_name}", 5000)
 
     def modify_app(self, action, package_name):
         """Modify an app (disable, enable, uninstall)."""
@@ -223,7 +259,7 @@ class AppManagerWorker(QThread):
     def modify_permission(self, package_name, permission, action):
         """Grant or revoke a permission."""
         try:
-            result = self._run_adb_command(['shell', f'pm {action} {package_name} {permission}'])
+            result = self._run_adb_command(['shell', 'pm', action, package_name, permission])
             if "not a changeable permission type" in result.stderr:
                 self.log_message.emit(f"Permission {permission} could not be {action}ed: Not changeable.")
             elif result.returncode == 0:
@@ -338,15 +374,13 @@ class AppManagerWorker(QThread):
     def _execute_install_command(self, command_args: List[str], current_app: str = "") -> bool:
         """Execute an ADB install command and handle the output."""
         try:
-            adb_exe = os.path.join(self.platform_tools_path, 'adb')
-            process = subprocess.Popen([adb_exe] + command_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
-
-            for line in iter(process.stdout.readline, ''):
+            result = self._run_adb_command(command_args)
+            
+            for line in result.stdout.splitlines():
                 if line.strip(): self.log_message.emit(line.strip())
             
-            return_code = process.wait()
-            if return_code != 0:
-                stderr_output = process.stderr.read().strip()
+            if result.returncode != 0:
+                stderr_output = result.stderr.strip()
                 self.log_message.emit(f"Installation failed: {stderr_output}")
                 if current_app: self.backup_progress.emit(current_app, f"Installation failed")
                 return False
@@ -360,7 +394,31 @@ class AppManagerWorker(QThread):
             return False
 
 
-class AppDetailsDialog(QDialog):
+class WorkerMixin:
+    """Mixin providing worker thread lifecycle management."""
+
+    def create_worker(self, operation, **kwargs):
+        """Creates, tracks, and connects a worker thread for cleanup."""
+        worker = AppManagerWorker(operation, parent=self, **kwargs)
+        worker.finished.connect(lambda: self.cleanup_worker(worker))
+        if hasattr(self, "_on_worker_status_message"):
+            worker.status_message.connect(self._on_worker_status_message)
+        self.active_workers.append(worker)
+        return worker
+
+    def cleanup_worker(self, worker):
+        """Removes a worker from the active list upon completion."""
+        if worker in self.active_workers:
+            self.active_workers.remove(worker)
+
+    def closeEvent(self, event):
+        """Ensures all background workers are finished before closing."""
+        for worker in self.active_workers:
+            worker.wait()
+        event.accept()
+
+
+class AppDetailsDialog(WorkerMixin, QDialog):
     """Dialog showing detailed app information and permissions."""
     def __init__(self, parent, package_name):
         super().__init__(parent)
@@ -375,24 +433,6 @@ class AppDetailsDialog(QDialog):
 
         self.init_ui()
         self.load_app_details()
-
-    def create_worker(self, operation, **kwargs):
-        """Creates, tracks, and connects a worker thread for cleanup."""
-        worker = AppManagerWorker(operation, parent=self, **kwargs)
-        worker.finished.connect(lambda: self.cleanup_worker(worker))
-        self.active_workers.append(worker)
-        return worker
-
-    def cleanup_worker(self, worker):
-        """Removes a worker from the active list upon completion."""
-        if worker in self.active_workers:
-            self.active_workers.remove(worker)
-
-    def closeEvent(self, event):
-        """Ensures all background workers are finished before closing."""
-        for worker in self.active_workers:
-            worker.wait()
-        event.accept()
 
     def init_ui(self):
         """Initialize the UI components."""
@@ -444,7 +484,7 @@ class AppDetailsDialog(QDialog):
         list_widget.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
         parent_layout.addWidget(list_widget)
         
-        # CODE CLEANUP: Connect button to the refactored helper function.
+
         select_all_button.clicked.connect(lambda: self._toggle_select_all(list_widget))
         return list_widget
 
@@ -465,17 +505,14 @@ class AppDetailsDialog(QDialog):
 
     def update_permissions(self, declared, requested, runtime):
         """Populate the permission lists."""
-        self.declared_list.clear()
-        for perm in declared:
-            self._add_checkable_item(self.declared_list, perm)
+        def populate_list(widget, items, formatter=lambda x: x):
+            widget.clear()
+            for item in items:
+                self._add_checkable_item(widget, formatter(item))
 
-        self.requested_list.clear()
-        for perm in requested:
-            self._add_checkable_item(self.requested_list, perm)
-
-        self.runtime_list.clear()
-        for perm, granted in runtime:
-            self._add_checkable_item(self.runtime_list, f"{perm} (Granted: {granted})")
+        populate_list(self.declared_list, declared)
+        populate_list(self.requested_list, requested)
+        populate_list(self.runtime_list, runtime, lambda r: f"{r[0]} (Granted: {r[1]})")
 
     def _add_checkable_item(self, list_widget, text):
         """Adds a checkable QListWidgetItem to a list."""
@@ -484,8 +521,7 @@ class AppDetailsDialog(QDialog):
         item.setCheckState(Qt.CheckState.Unchecked)
         list_widget.addItem(item)
     
-    def _toggle_select_all(self, list_widget):
-        """CODE CLEANUP: Replaces three separate methods with one generic helper."""
+    def _toggle_select_all(self, list_widget): 
         # Determine if we should check or uncheck all items
         is_anything_unchecked = any(list_widget.item(i).checkState() != Qt.CheckState.Checked for i in range(list_widget.count()))
         new_state = Qt.CheckState.Checked if is_anything_unchecked else Qt.CheckState.Unchecked
@@ -493,17 +529,20 @@ class AppDetailsDialog(QDialog):
         for i in range(list_widget.count()):
             list_widget.item(i).setCheckState(new_state)
 
+    @staticmethod
+    def _get_checked_texts(list_widget) -> list:
+        """Return the text of all checked items in a QListWidget."""
+        return [
+            list_widget.item(i).text()
+            for i in range(list_widget.count())
+            if list_widget.item(i).checkState() == Qt.CheckState.Checked
+        ]
+
     def modify_permissions(self, action):
         """Grant or revoke selected permissions."""
-        selected_permissions = []
-        for i in range(self.runtime_list.count()):
-            item = self.runtime_list.item(i)
-            if item.checkState() == Qt.CheckState.Checked:
-                selected_permissions.append(item.text().split(" (")[0])
-        for i in range(self.requested_list.count()):
-            item = self.requested_list.item(i)
-            if item.checkState() == Qt.CheckState.Checked:
-                selected_permissions.append(item.text())
+        runtime_checked = [t.split(" (")[0] for t in self._get_checked_texts(self.runtime_list)]
+        requested_checked = self._get_checked_texts(self.requested_list)
+        selected_permissions = runtime_checked + requested_checked
 
         if not selected_permissions:
             QMessageBox.warning(self, "No Selection", f"No permissions selected to {action}.")
@@ -525,6 +564,10 @@ class AppDetailsDialog(QDialog):
         permissions_worker.log_message.connect(self.parent.log)
         permissions_worker.start()
 
+    def _on_worker_status_message(self, message: str, timeout_ms: int = 5000):
+        if hasattr(self.parent, "_on_worker_status_message"):
+            self.parent._on_worker_status_message(message, timeout_ms)
+
 
 class CustomSortProxyModel(QSortFilterProxyModel):
     """Custom sort filter proxy model for special sorting rules."""
@@ -545,14 +588,14 @@ class CustomSortProxyModel(QSortFilterProxyModel):
         return super().lessThan(left, right)
 
 
-class AppManagerUI(QMainWindow):
+class AppManagerUI(WorkerMixin, QMainWindow):
     """Main UI for the ADB App Manager."""
     def __init__(self, platform_tools_path_param=None):
         super().__init__()
-        # ROBUSTNESS: Initialize platform_tools_path as an instance variable.
-        self.platform_tools_path = platform_tools_path_param or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'platform-tools')
+        # Initialize platform_tools_path as an instance variable.
+        self.platform_tools_path = platform_tools_path_param or resource_path('platform-tools')
         
-        self.setWindowTitle("ADB App Manager")
+        self.setWindowTitle("QuickADB App Manager")
         self.setMinimumSize(1000, 700)
         
         self.selected_packages = set()
@@ -568,7 +611,6 @@ class AppManagerUI(QMainWindow):
             return
 
         dialog = self.CreatePresetDialog(self)
-        self.apply_dialog_theme(dialog)
         if dialog.exec():
             preset_name = dialog.name_input.text().strip() or "New Preset"
             preset_data = {
@@ -615,9 +657,6 @@ class AppManagerUI(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error Loading Preset", f"Failed to load preset: {e}")
 
-    def apply_dialog_theme(self, dialog):
-        dialog.setStyleSheet(ThemeManager.get_dialog_style())
-
     class CreatePresetDialog(QDialog):
         """Dialog for creating a new preset."""
         def __init__(self, parent=None):
@@ -644,24 +683,6 @@ class AppManagerUI(QMainWindow):
             buttons.rejected.connect(self.reject)
             layout.addWidget(buttons)
 
-    def create_worker(self, operation, **kwargs):
-        """Creates, tracks, and connects a worker thread for cleanup."""
-        worker = AppManagerWorker(operation, parent=self, **kwargs)
-        worker.finished.connect(lambda: self.cleanup_worker(worker))
-        self.active_workers.append(worker)
-        return worker
-
-    def cleanup_worker(self, worker):
-        """Removes a worker from the active list upon completion."""
-        if worker in self.active_workers:
-            self.active_workers.remove(worker)
-
-    def closeEvent(self, event):
-        """Ensures all background workers are finished before closing."""
-        for worker in self.active_workers:
-            worker.wait()
-        event.accept()
-
     def log(self, message):
         """Add a message to the log output."""
         self.log_output.append(message)
@@ -681,7 +702,7 @@ class AppManagerUI(QMainWindow):
 
     def populate_app_list(self, apps):
         """Populate the app list with fetched data efficiently."""
-        # PERFORMANCE: Use begin/endResetModel for efficient bulk updates.
+        self.tree_view.setSortingEnabled(False)
         self.model.beginResetModel()
         for app_name, package_name, status, app_type in apps:
             checkbox_item = QStandardItem()
@@ -691,6 +712,7 @@ class AppManagerUI(QMainWindow):
                 QStandardItem(status), QStandardItem(app_type)
             ])
         self.model.endResetModel()
+        self.tree_view.setSortingEnabled(True)
         
         self.statusBar().showMessage(f"Loaded {len(apps)} apps", 5000)
 
@@ -707,11 +729,15 @@ class AppManagerUI(QMainWindow):
         checkbox_item = self.model.item(row, 0)
         package_name = self.model.item(row, 2).text()
         
-        # Toggle checkbox state regardless of which column was clicked
-        new_state = Qt.CheckState.Unchecked if checkbox_item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked
-        checkbox_item.setCheckState(new_state)
+        # If the user clicked the actual checkbox column, Qt already toggled the visual state.
+        # We just need to sync our `selected_packages` set.
+        # If they clicked any other column, we manually toggle the visual state to match.
+        if index.column() != 0:
+            new_state = Qt.CheckState.Unchecked if checkbox_item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked
+            checkbox_item.setCheckState(new_state)
         
-        if new_state == Qt.CheckState.Checked:
+        # Sync the set with the final visual state
+        if checkbox_item.checkState() == Qt.CheckState.Checked:
             self.selected_packages.add(package_name)
         else:
             self.selected_packages.discard(package_name)
@@ -776,14 +802,15 @@ class AppManagerUI(QMainWindow):
         
         if package_name:
             dialog = AppDetailsDialog(self, package_name)
-            self.apply_dialog_theme(dialog)
             dialog.exec()
             
     def init_ui(self):
         """Initialize the UI components."""
         central_widget = QWidget()
         main_layout = QVBoxLayout(central_widget)
+        self.statusBar()
         ThemeManager.apply_theme(self)
+        self._apply_statusbar_theme_color()
 
         # Search and actions
         top_layout = QHBoxLayout()
@@ -799,7 +826,7 @@ class AppManagerUI(QMainWindow):
 
         # App list view
         self.model = QStandardItemModel(0, 5)
-        self.model.setHorizontalHeaderLabels(["", "App Name", "Package Name", "Status", "App Type"])
+        self.model.setHorizontalHeaderLabels(["Check", "App Name", "Package Name", "Status", "App Type"])
         self.proxy_model = CustomSortProxyModel()
         self.proxy_model.setSourceModel(self.model)
         self.proxy_model.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -811,9 +838,17 @@ class AppManagerUI(QMainWindow):
         self.tree_view.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
         self.tree_view.setAlternatingRowColors(True)
         self.tree_view.clicked.connect(self.toggle_selection)
-        self.tree_view.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.tree_view.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.tree_view.setColumnWidth(0, 30)
+        self.tree_view.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.tree_view.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        self.tree_view.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self.tree_view.header().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        self.tree_view.header().setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        self.tree_view.setColumnWidth(0, 60)
+        self.tree_view.setColumnWidth(1, 200)
+        self.tree_view.setColumnWidth(2, 500)
+        self.tree_view.setColumnWidth(3, 70)
+        self.tree_view.setColumnWidth(4, 70)
+
         main_layout.addWidget(self.tree_view, 1)
 
         # Action buttons
@@ -847,18 +882,28 @@ class AppManagerUI(QMainWindow):
         self.setCentralWidget(central_widget)
         self.statusBar().showMessage("Ready")
 
+    def _apply_statusbar_theme_color(self):
+        self.statusBar().setStyleSheet(
+            f"QStatusBar {{ color: {ThemeManager.TEXT_COLOR_PRIMARY}; }}"
+            "QStatusBar::item { border: none; }"
+        )
+
+    def _on_worker_status_message(self, message: str, timeout_ms: int = 5000):
+        bar = self.statusBar()
+        bar.setVisible(True)
+        bar.showMessage(message, max(0, timeout_ms))
+
+
 
 def run_app_manager(custom_platform_tools_path=None):
     """Initializes and runs the AppManagerUI application."""
-    app = QApplication.instance() or QApplication(sys.argv)
+    existing = QApplication.instance()
+    app = existing or QApplication(sys.argv)
     window = AppManagerUI(platform_tools_path_param=custom_platform_tools_path)
     window.show()
-    # Only call app.exec() if we created the QApplication instance in this function
-    if not QApplication.instance():
+    if not existing:
         return app.exec()
     return window
 
 if __name__ == "__main__":
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    platform_tools_path = os.path.join(script_dir, '..', 'platform-tools') # Adjust path if needed
-    sys.exit(run_app_manager(custom_platform_tools_path=platform_tools_path))
+    sys.exit(run_app_manager(custom_platform_tools_path=resource_path('platform-tools')))

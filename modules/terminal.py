@@ -1,17 +1,24 @@
+"""
+terminal.py - QuickADB's terminal module. Detects the OS, launches a shell and streams the input and output back and forth.
+Supports extracting the output into .txt files and auto-completing adb and fastboot commands. Should help beginners with debugging.
+
+"""
+
 import sys
 import os
 
-script_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = os.path.dirname(script_dir)
-sys.path.insert(0, root_dir)
+from util.resource import get_root_dir, resource_path
+root_dir = get_root_dir()
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 
 import time
 import platform
 import shutil
 import signal
+import subprocess
 import io
 import tempfile
-import subprocess
 from datetime import datetime
 
 from PyQt6.QtWidgets import (QMainWindow, QPlainTextEdit, QLineEdit, QPushButton, 
@@ -227,7 +234,7 @@ class TerminalWindow(QMainWindow):
         
         self.app_version = app_version
         self.app_suffix = app_suffix
-        self.platform_tools_path = os.path.join(root_dir, 'platform-tools')
+        self.platform_tools_path = resource_path('platform-tools')
         
         self.system = platform.system()
         self.is_windows = self.system == "Windows"
@@ -307,13 +314,22 @@ class TerminalWindow(QMainWindow):
             if command:
                 return command
             try:
+                # Windows specific: Create a new process group and hide the console window.
+                creationflags = 0
+                if sys.platform == "win32":
+                    creationflags = (
+                        subprocess.CREATE_NEW_PROCESS_GROUP |
+                        subprocess.CREATE_NO_WINDOW
+                    )
+                
                 result = subprocess.run(
                     command.split() if isinstance(command, str) else command,
                     capture_output=True,
                     text=True,
                     encoding="utf-8" if not self.is_windows else "latin-1",
                     errors="replace",
-                    timeout=5
+                    timeout=5,
+                    creationflags=creationflags
                 )
                 return result.stdout.strip() if result.returncode == 0 else fallback
             except:
@@ -368,7 +384,31 @@ class TerminalWindow(QMainWindow):
 
     def cleanup_process_and_threads(self):
         """Properly cleanup process and threads"""
-        # Stop the reader first
+        # Kill the process first to unblock readline
+        if self.process and self.process.poll() is None:
+            try:
+                if self.is_windows:
+                    subprocess.run(f"taskkill /F /PID {self.process.pid} /T", 
+                                  shell=True, capture_output=True, timeout=2,
+                                  creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
+                else:
+                    try:
+                        os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+                        time.sleep(0.2)
+                        if self.process.poll() is None:
+                            os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        self.process.terminate()
+                        time.sleep(0.2)
+                        if self.process.poll() is None:
+                            self.process.kill()
+            except Exception:
+                try:
+                    self.process.kill()
+                except:
+                    pass
+
+        # Stop the reader
         if self.reader:
             self.reader.stop()
         
@@ -386,29 +426,6 @@ class TerminalWindow(QMainWindow):
             if not self.reader_thread.wait(2000):  # Wait up to 2 seconds
                 self.reader_thread.terminate()
                 self.reader_thread.wait(100)
-        
-        # Kill the process
-        if self.process and self.process.poll() is None:
-            try:
-                if self.is_windows:
-                    subprocess.run(f"taskkill /F /PID {self.process.pid} /T", 
-                                  shell=True, capture_output=True, timeout=2)
-                else:
-                    try:
-                        os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
-                        time.sleep(0.2)
-                        if self.process.poll() is None:
-                            os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
-                    except (ProcessLookupError, OSError):
-                        self.process.terminate()
-                        time.sleep(0.2)
-                        if self.process.poll() is None:
-                            self.process.kill()
-            except Exception:
-                try:
-                    self.process.kill()
-                except:
-                    pass
         
         # Clean up RC file
         if self.custom_rc_path and os.path.exists(self.custom_rc_path):
@@ -446,7 +463,7 @@ class TerminalWindow(QMainWindow):
                     self.log_output("No shell found on Linux system.\n")
                     return
                 encoding = "utf-8"
-                self.custom_rc_path = os.path.join(self.platform_tools_path, ".quickadb_rc")
+                self.custom_rc_path = os.path.join(tempfile.gettempdir(), f"quickadb_rc_{os.getpid()}")
                 with open(self.custom_rc_path, "w", encoding="utf-8") as f:
                     f.write("# Custom QuickADB RC\n")
                     f.write("export PS1='$ '\n")
@@ -467,6 +484,15 @@ class TerminalWindow(QMainWindow):
                 current_path = env.get('PATH', '')
                 env['PATH'] = f".:{self.platform_tools_path}:{current_path}"
 
+            creationflags = 0
+            startupinfo = None
+            
+            if self.is_windows:
+                creationflags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP |
+                    subprocess.CREATE_NO_WINDOW
+                )
+            
             self.process = subprocess.Popen(
                 launch_cmd,
                 cwd=self.platform_tools_path,
@@ -478,7 +504,8 @@ class TerminalWindow(QMainWindow):
                 bufsize=0,
                 env=env if not self.is_windows else None,
                 preexec_fn=os.setsid if not self.is_windows else None,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if self.is_windows else 0
+                creationflags=creationflags,
+                startupinfo=startupinfo
             )
 
             self.process.stdout = io.TextIOWrapper(

@@ -1,13 +1,8 @@
-#!/usr/bin/env python3
 """
-gsiflasher.py - GSI Flasher UI (refactored, runnable)
 
-Behavior preserved:
-- Public method names kept for compatibility.
-- Preferred detection: `fastboot devices` first. If none, fallback to pyusb enumeration.
-- If pyusb sees Android-like USB devices but fastboot doesn't, user is prompted about drivers.
-- Non-blocking command execution with realtime log streaming; final callback receives collected output.
-- Exposes run_gsi_flasher() for standalone use and `if __name__ == "__main__"` entrypoint.
+gsiflasher.py - QuickADB's automated GSI flasher module.
+Detects device state via adb and fastboot, calculates partition sizes and automates the flashing process.
+
 """
 
 import sys
@@ -18,21 +13,23 @@ import time
 import webbrowser
 from pathlib import Path
 
-# Keep same path behavior as other modules
-script_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = os.path.dirname(script_dir)
-sys.path.insert(0, root_dir)
+from util.resource import get_root_dir, resource_path, resolve_platform_tool
+root_dir = get_root_dir()
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 
 from util.thememanager import ThemeManager
+from main.adbfunc import CommandRunner
 
-from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTextEdit,
     QFileDialog, QMessageBox, QFrame, QLabel, QApplication, QFontDialog, QProgressBar
 )
 from PyQt6.QtGui import QFont
 
-# Optional pyusb: handle absence gracefully
+# Optional pyusb. Will always be present when QuickADB is compiled.
+# Used to detect connected devices that aren't detected by fastboot. 
 try:
     import usb.core
     import usb.util
@@ -42,99 +39,62 @@ except Exception:
     _PYUSB_AVAILABLE = False
 
 
-# ----- Worker / Command runner (streams output) -----
-class WorkerSignals(QObject):
-    finished = pyqtSignal(str)   # Emitted with collected output when done
-    log = pyqtSignal(str)        # Emitted for each streamed line
 
 
-class CommandRunner:
+class DeviceScannerWorker(QThread):
     """
-    Lightweight worker that runs a command and streams stdout/stderr lines via signals.
-    Designed to be executed in a background Python thread (threading.Thread).
+    State machine worker for checking connected ADB and Fastboot devices securely in the background.
+    Emits specific states and logs back to the UI.
     """
+    log_msg = pyqtSignal(str)
+    status_msg = pyqtSignal(str)
+    
+    # Emits (adb_devices_list, fastboot_devices_list)
+    devices_found = pyqtSignal(list, list)
 
-    def __init__(self, command, platform_tools_path=None):
-        """
-        command: list (preferred) or string.
-        platform_tools_path: directory where adb/fastboot executables live (optional).
-        """
-        self.command = command
+    def __init__(self, platform_tools_path):
+        super().__init__()
         self.platform_tools_path = platform_tools_path
-        self.signals = WorkerSignals()
-
-    def _resolve_executable(self, exe_name):
-        """
-        If platform_tools_path provided and an executable exists there, return full path.
-        Else return exe_name (allow PATH lookup).
-        On Windows, append .exe when checking in platform-tools.
-        """
-        if not exe_name:
-            return exe_name
-        if self.platform_tools_path:
-            candidate = os.path.join(self.platform_tools_path, exe_name)
-            if os.name == "nt" and not candidate.lower().endswith(".exe"):
-                candidate_exe = candidate + ".exe"
-                if os.path.exists(candidate_exe):
-                    return candidate_exe
-            if os.path.exists(candidate):
-                return candidate
-        # fallback to exe_name (rely on PATH)
-        return exe_name
+        self.running = True
 
     def run(self):
-        """Execute the command, stream lines to log signal, emit finished with full captured output."""
+        adb_cmd = resolve_platform_tool(self.platform_tools_path, "adb")
+        fastboot_cmd = resolve_platform_tool(self.platform_tools_path, "fastboot")
+
+        self.status_msg.emit("Checking for connected devices...")
+        self.log_msg.emit("[INFO] Starting device scan...")
+
         try:
-            # Accept either list or string; prefer list
-            if isinstance(self.command, (list, tuple)):
-                cmd_list = list(self.command)
+            # 1. Check ADB
+            adb_proc = subprocess.run([adb_cmd, "devices"], 
+                                      capture_output=True, text=True, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            adb_devs = []
+            for line in adb_proc.stdout.splitlines()[1:]:
+                parts = line.split()
+                if len(parts) >= 2 and parts[1].lower() == "device":
+                    adb_devs.append(parts[0])
+
+            # 2. Check Fastboot
+            fastboot_proc = subprocess.run([fastboot_cmd, "devices"], 
+                                           capture_output=True, text=True, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            fb_devs = []
+            for line in fastboot_proc.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[1].lower() in ("fastboot", "device", "recovery", "bootloader"):
+                    fb_devs.append(parts[0])
+
+            if adb_devs or fb_devs:
+                self.log_msg.emit(f"[INFO] Scan complete. ADB: {len(adb_devs)}, Fastboot: {len(fb_devs)}.")
+                self.status_msg.emit("Waiting for user input...")
+                self.devices_found.emit(adb_devs, fb_devs)
             else:
-                # keep as string and run through shell
-                cmd_list = self.command
+                self.log_msg.emit("[INFO] No devices detected across ADB or Fastboot.")
+                self.status_msg.emit("No devices found. Please connect a device and try again.")
+                self.devices_found.emit([], [])
 
-            # If list, attempt to resolve first element in platform-tools folder
-            if isinstance(cmd_list, list) and len(cmd_list) > 0:
-                cmd_list[0] = self._resolve_executable(cmd_list[0])
-
-            # Build subprocess.Popen args
-            use_shell = not isinstance(cmd_list, list)
-            proc = subprocess.Popen(
-                cmd_list,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=self.platform_tools_path or None,
-                shell=use_shell,
-                text=True,
-                bufsize=1,
-                universal_newlines=True
-            )
-
-            collected = []
-            # Stream lines as they arrive
-            if proc.stdout:
-                for line in proc.stdout:
-                    if line is None:
-                        continue
-                    line = line.rstrip("\n")
-                    collected.append(line)
-                    try:
-                        self.signals.log.emit(line)
-                    except Exception:
-                        # Signals may be disconnected; continue
-                        pass
-
-            rc = proc.wait()
-            output = "\n".join(collected)
-            # Mark finished (include rc info when helpful)
-            final = output if output else ""
-            self.signals.finished.emit(final)
         except Exception as e:
-            # Emit whatever we have and log the exception
-            try:
-                self.signals.log.emit(f"[ERROR] {str(e)}")
-                self.signals.finished.emit("")
-            except Exception:
-                pass
+            self.log_msg.emit(f"[ERROR] Device scan failed: {str(e)}")
+            self.status_msg.emit("Error during device scan.")
 
 
 # ----- GSIFlasherUI -----
@@ -143,27 +103,18 @@ class GSIFlasherUI(QMainWindow):
     def __init__(self, platform_tools_path=None, parent=None):
         super().__init__(parent)
 
-        # platform-tools path (default preserves original global behavior)
+
         self.platform_tools_path = platform_tools_path or os.path.join(root_dir, "platform-tools")
         self.gsi_image_path = None
         self.system_partition_available = False
         self.fastbootd_confirmed = False
         self.command_threads = []   # keep Python Thread refs to avoid GC
-        self._last_fastboot_output = ""
-        self.adb_prompt_shown = False
+        self.scanner_thread = None
 
-
-        self.setWindowTitle("GSI Flasher")
+        self.setWindowTitle("QuickADB GSI Flasher")
         self.setMinimumSize(700, 500)
         self.setup_ui()
         ThemeManager.apply_theme(self)
-
-        # Timer used for repeated checks (only active when checking)
-        self.usb_timer = QTimer(self)
-        self.usb_timer.timeout.connect(self.check_device_state)
-
-        # Kick off initial check shortly after UI shows
-        QTimer.singleShot(150, self.check_device_state)
 
     def setup_ui(self):
         central = QWidget()
@@ -191,8 +142,8 @@ class GSIFlasherUI(QMainWindow):
         btn_layout = QHBoxLayout(btn_frame)
         btn_layout.setSpacing(8)
 
-        self.recheck_btn = QPushButton("Re-check Devices")
-        self.recheck_btn.clicked.connect(self.on_recheck_devices_clicked)
+        self.recheck_btn = QPushButton("Check Devices")
+        self.recheck_btn.clicked.connect(self.on_check_devices_clicked)
         btn_layout.addWidget(self.recheck_btn)
 
         self.treble_info_btn = QPushButton("Treble Info App")
@@ -232,10 +183,13 @@ class GSIFlasherUI(QMainWindow):
 
         layout.addWidget(bottom_frame)
 
-        # Progress bar (used loosely for long tasks)
-        self.progress = QProgressBar()
-        self.progress.setValue(0)
-        layout.addWidget(self.progress)
+        # Active Status Label
+        self.status_label = QLabel("Ready. Click 'Check Devices' to begin.")
+        f_status = QFont()
+        f_status.setItalic(True)
+        self.status_label.setFont(f_status)
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.status_label)
 
         # Initial guidance logs
         self.log("[INFO] This method may not work on Samsung devices unless using custom recovery.")
@@ -251,220 +205,181 @@ class GSIFlasherUI(QMainWindow):
             # fallback: print to stdout if UI fails
             print(f"[{ts}] {message}")
 
-    # ---- Command execution helper ----
     def run_command_async(self, command, callback=None):
         """
-        command: list (recommended) or string.
-        callback: callable receiving a single string argument (collected output) when finished.
+        Executes an ADB/Fastboot command using QuickADB's CommandRunner.
         """
-        runner = CommandRunner(command, self.platform_tools_path)
-        runner.signals.log.connect(self.log)
-
-        def _on_finished(output):
-            try:
-                if callback:
-                    callback(output)
-            except Exception as e:
-                self.log(f"[ERROR] Callback raised: {e}")
-
-        runner.signals.finished.connect(_on_finished)
-
-        t = threading.Thread(target=runner.run, daemon=True)
-        t.start()
-        self.command_threads.append(t)
-        return t
-
-    # ---- Device detection flow (fastboot preferred) ----
-
-    def on_recheck_devices_clicked(self): # reset the adb reboot prompt with each button click
-        self.adb_prompt_shown = False
-        self.check_device_state()
-
-    def check_device_state(self):
-        """Public entry: start a device check. Uses adb pre-check, then fastboot devices, then pyusb fallback."""
-        if not hasattr(self, "retry_count") or self.retry_count <= 0:
-            self.retry_count = 5
-
-        self.log("[INFO] Checking for connected devices via ADB...")
-        adb_cmd = "adb.exe" if os.name == "nt" else "adb"
-        self.run_command_async([adb_cmd, "devices"], self._adb_devices_callback)
-
-    def _adb_devices_callback(self, output: str):
-        """If ADB shows a connected device, optionally reboot to fastboot."""
-        devices = []
-        for ln in (output or "").splitlines()[1:]:  # skip header
-            ln = ln.strip()
-            if not ln:
-                continue
-            parts = ln.split()
-            if len(parts) >= 2 and parts[1].lower() == "device":
-                devices.append(parts[0])
-
-            if devices and not self.adb_prompt_shown:
-                self.adb_prompt_shown = True
-                self.log(f"[INFO] ADB device(s) detected: {', '.join(devices)}")
-                reply = QMessageBox.question(
-                    self,
-                    "ADB Device Detected",
-                    "One or more devices are connected via ADB.\n"
-                    "Do you want to reboot them into fastboot mode now?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                )
-                if reply == QMessageBox.StandardButton.Yes:
-                    adb_cmd = "adb.exe" if os.name == "nt" else "adb"
-                    self.run_command_async([adb_cmd, "reboot", "fastboot"], lambda o: self._start_fastboot_check())
-                else:
-                    self._start_fastboot_check()
-            else:
-                self._start_fastboot_check()
+        # CommandRunner expects the command list to NOT include the actual executable name
+        # if the executable is adb. However, if it's fastboot, it still needs to be passed properly.
+        # So we just pass the full string to shell=True format, or format it.
+        if isinstance(command, list):
+            cmd_str = " ".join(f'"{c}"' if " " in c else c for c in command)
+        else:
+            cmd_str = command
             
-
-    def _start_fastboot_check(self):
-        """Starts repeated fastboot checking with retry counter."""
-        if not self.usb_timer.isActive():
-            self.usb_timer.start(1000)  # check every 1 sec
-        self._do_fastboot_check()
-
-    def _do_fastboot_check(self):
-        """Single iteration of fastboot check."""
-        if self.retry_count <= 0:
-            self.log("[INFO] No devices detected after retries. Stopping automatic checks.")
-            self.usb_timer.stop()
-            return
-
-        self.log("[INFO] Checking for fastboot devices (preferred).")
-        fastboot_cmd = "fastboot.exe" if os.name == "nt" else "fastboot"
-        self.run_command_async([fastboot_cmd, "devices"], self._fastboot_devices_callback)
-
-        # decrement retry count after scheduling
-        self.retry_count -= 1
-        if self.retry_count < 0:
-            self.log("[INFO] No devices detected after retries. Stopping automatic checks.")
-            self.usb_timer.stop()
-            return
-
-
-    def _fastboot_devices_callback(self, output: str):
-        """Same as before but with retry countdown logging."""
-        self._last_fastboot_output = output or ""
-        out_text = (output or "").strip()
-        if out_text:
-            device_lines = []
-            for ln in out_text.splitlines():
-                ln = ln.strip()
-                if not ln or "waiting for" in ln.lower():
-                    continue
-                parts = ln.split()
-                if len(parts) >= 2 and parts[1].lower() in ("fastboot", "device", "recovery", "bootloader"):
-                    device_lines.append(parts[0])
-            if device_lines:
-                self.log(f"[INFO] fastboot device(s) detected: {', '.join(device_lines)}")
-                self.usb_timer.stop()
-                self.fetch_fastboot_info()
-                return
-
-        # No fastboot device
-        self.log("[INFO] No fastboot devices found. Probing USB descriptors (pyusb fallback)...")
-        self._probe_pyusb_and_prompt_if_needed()
-
-        if self.retry_count > 0:
-            self.log(f"[INFO] No fastboot or Android-like USB devices detected. Retrying... ({self.retry_count})")
-        if self.retry_count == 0:
-            self.log("[INFO] No devices detected after retries. Stopping automatic checks.")
-            self.usb_timer.stop()
-
-    def _probe_pyusb_and_prompt_if_needed(self):
-        if not _PYUSB_AVAILABLE:
-            self.log("[INFO] pyusb not available; will rely on fastboot command fallback.")
-            return
-
-        try:
-            devices = list(usb.core.find(find_all=True))
-        except Exception as e:
-            self.log(f"[ERROR] pyusb enumeration failed: {e}")
-            return
-
-        android_like = []
-        for dev in devices:
-            try:
-                manuf = ""
-                prod = ""
-                try:
-                    if dev.iManufacturer:
-                        manuf = usb.util.get_string(dev, dev.iManufacturer) or ""
-                except Exception:
-                    manuf = ""
-                try:
-                    if dev.iProduct:
-                        prod = usb.util.get_string(dev, dev.iProduct) or ""
-                except Exception:
-                    prod = ""
-                check = (manuf + " " + prod).lower()
-                if any(k in check for k in ("android", "fastboot", "adb", "bootloader")):
-                    android_like.append((dev.idVendor, dev.idProduct, manuf.strip(), prod.strip()))
-            except Exception:
-                continue
-
-        if android_like:
-            if self.usb_timer.isActive():
-                self.usb_timer.stop()
-            self.log("[WARN] USB device(s) resembling Android were found but not enumerated by fastboot.")
-            for vid, pid, manuf, prod in android_like:
-                self.log(f"USB: {vid:04x}:{pid:04x} - {manuf} {prod}")
-            self._prompt_driver_issue(android_like)
-            return
-
+        thread = CommandRunner(cmd_str, self.platform_tools_path)
         
+        captured_output = []
+        
+        # CommandRunner emits output_signal(text, tag)
+        def handle_output(text, tag):
+            self.log(text)
+            captured_output.append(text)
+            
+        thread.output_signal.connect(handle_output)
+        
+        # CommandRunner is a QThread, so it emits finished()
+        def handle_finished():
+            if callback:
+                # Pass the unified output to maintain compatibility with older gsiflasher callbacks
+                callback("\n".join(captured_output))
+            # Cleanup the thread ref
+            if thread in self.command_threads:
+                self.command_threads.remove(thread)
+                
+        thread.finished.connect(handle_finished)
+        
+        self.command_threads.append(thread)
+        thread.start()
 
-    def _prompt_driver_issue(self, android_like):
-        details = (
-            "A USB device resembling an Android device was detected by the system, but 'fastboot' did not enumerate it.\n\n"
-            "Possible causes:\n"
-            "- Missing or incorrect USB/fastboot drivers (Windows: install OEM or Google USB drivers).\n"
-            "- Device in an unexpected USB mode.\n\n"
-            "Action: Install/update drivers, replug device, then click 'Re-check Devices'."
-        )
-        QMessageBox.critical(self, "Device Not Detected by fastboot", details)
+    def _tool_path(self, tool_name: str) -> str:
+        return resolve_platform_tool(self.platform_tools_path, tool_name)
+        return thread
 
+    # ---- Device detection flow (New Linear State Machine) ----
+
+    def on_check_devices_clicked(self):
+        self.recheck_btn.setEnabled(False)
+        self.flash_gsi_btn.setEnabled(False)
+        self.status_label.setText("Starting device scan...")
+        
+        # Stop any existing scan if somehow running
+        if self.scanner_thread and self.scanner_thread.isRunning():
+            self.scanner_thread.running = False
+            self.scanner_thread.wait()
+
+        # Build and start new scan worker
+        self.scanner_thread = DeviceScannerWorker(self.platform_tools_path)
+        self.scanner_thread.log_msg.connect(self.log)
+        self.scanner_thread.status_msg.connect(self.status_label.setText)
+        self.scanner_thread.devices_found.connect(self._handle_scanned_devices)
+        self.scanner_thread.finished.connect(lambda: self.recheck_btn.setEnabled(True))
+        self.scanner_thread.start()
+
+    def _handle_scanned_devices(self, adb_devs: list, fb_devs: list):
+        """
+        Receives results from DeviceScannerWorker and handles user prompts.
+        Implements the 3 multi-device scenarios.
+        """
+        num_adb = len(adb_devs)
+        num_fb = len(fb_devs)
+
+        # Scenario 1: More than 1 ADB device
+        if num_adb > 1:
+            self.log("[WARN] Multiple ADB devices detected.")
+            QMessageBox.warning(self, "Multiple Devices", 
+                                "More than one ADB device detected.\nQuickADB V4 currently does not support multi-device operations natively.\n\nPlease disconnect the unwanted device(s) and try again.")
+            self.status_label.setText("Multiple ADB devices. Disconnect one.")
+            return
+
+        # Scenario 2: More than 1 Fastboot device
+        if num_fb > 1:
+            self.log("[WARN] Multiple Fastboot devices detected.")
+            QMessageBox.warning(self, "Multiple Devices", 
+                                "More than one Fastboot device detected.\nQuickADB V4 currently does not support multi-device operations natively.\n\nPlease disconnect the unwanted device(s) and try again.")
+            self.status_label.setText("Multiple Fastboot devices. Disconnect one.")
+            return
+
+        # Scenario 3: 1 ADB and 1 Fastboot device
+        if num_adb == 1 and num_fb == 1:
+            self.log("[INFO] Conflict: 1 ADB and 1 Fastboot device found simultaneously.")
+            reply = QMessageBox.question(
+                self, "Device Conflict Detected",
+                "QuickADB detected one device in ADB mode, and another in Fastboot mode.\n\n"
+                "Which device would you like to target?\n"
+                "Yes = Fastboot Device (Proceed with flash setup)\n"
+                "No = ADB Device (Reboot it to Fastboot mode)",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.log("[INFO] User elected to proceed with the Fastboot device.")
+                self.status_label.setText("Analyzing fastboot partition...")
+                self.fetch_fastboot_info()
+            else:
+                self.log("[INFO] User elected to reboot the ADB device to Fastboot.")
+                self.status_label.setText("Rebooting ADB device to fastboot...")
+                adb_cmd = self._tool_path("adb")
+                # Fire and forget reboot, tell user to rescan later
+                self.run_command_async([adb_cmd, "reboot", "bootloader"], 
+                                       lambda o: self.status_label.setText("Reboot triggered. Please wait 15s, then Check Devices again."))
+            return
+
+        # Scenario 4: Exactly 1 ADB device, 0 Fastboot
+        if num_adb == 1 and num_fb == 0:
+            reply = QMessageBox.question(
+                self, "ADB Device Detected",
+                "One device is connected via ADB.\nDo you want to reboot it into fastboot mode now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.log("[INFO] Rebooting device to fastboot...")
+                self.status_label.setText("Rebooting device to fastboot...")
+                adb_cmd = self._tool_path("adb")
+                self.run_command_async([adb_cmd, "reboot", "fastboot"], 
+                                       lambda o: self.status_label.setText("Reboot triggered. Please wait 15s, then Check Devices again."))
+            return
+
+        # Scenario 5: Exactly 1 Fastboot device, 0 ADB
+        if num_fb == 1 and num_adb == 0:
+            self.log("[INFO] One Fastboot device detected. Proceeding...")
+            self.status_label.setText("Analyzing fastboot partition...")
+            self.fetch_fastboot_info()
+            return
 
     # Provide a compatibility wrapper used elsewhere
     def run_fastboot_devices_fallback(self):
-        """Compatibility wrapper: call check_device_state which prefers fastboot then falls back."""
-        self.check_device_state()
+        """Compatibility wrapper: call on_check_devices_clicked."""
+        self.on_check_devices_clicked()
 
     # ---- Partition & flash helpers ----
     def fetch_fastboot_info(self, output=None):
         """Query device for partition info using fastboot getvar all."""
         self.log("[INFO] Gathering fastboot partition info (fastboot getvar all).")
-        fastboot_cmd = "fastboot.exe" if os.name == "nt" else "fastboot"
+        fastboot_cmd = self._tool_path("fastboot")
         self.run_command_async([fastboot_cmd, "getvar", "all"], self.parse_partition_info)
 
     def parse_partition_info(self, output: str):
-        """
-        Inspect output of `fastboot getvar all` for 'super' or 'system' info.
-        Enable flash button when appropriate.
-        """
-        out = (output or "").lower()
-        super_found = False
-        system_found = False
+        super_partition_size = None
+        system_partition_size = None
 
-        # Look for keywords in the raw output; original script parsed hex sizes, but simple detection suffices.
-        if "partition-size:super" in out or "(bootloader) super" in out or "super" in out and "partition" in out:
-            super_found = True
-        if "partition-size:system" in out or "(bootloader) system" in out or "system" in out and "partition" in out:
-            system_found = True
+        for line in output.splitlines():
+            out_line = line.lower()
+            if "partition-size:super" in out_line:
+                # The raw string is usually something like "partition-size:super: 0x1B4000000"
+                try:
+                    super_partition_size = int(out_line.split(":")[-1].strip(), 16) / (1024 ** 3)
+                except ValueError:
+                    super_partition_size = 1.0 # fallback
+            elif "partition-size:system" in out_line:
+                try:
+                    system_partition_size = int(out_line.split(":")[-1].strip(), 16) / (1024 ** 3)
+                except ValueError:
+                    system_partition_size = 1.0 # fallback
 
-        if system_found:
+        if system_partition_size:
             self.system_partition_available = True
-            self.log("[INFO] System partition detected.")
+            self.log("[INFO] System partition detected, ignoring the super partition...")
+            self.log(f"[INFO] Detected system partition with size: {system_partition_size:.2f} GB")
+            self.status_label.setText("System partition detected. Ready to flash.")
             if self.gsi_image_path:
                 self.flash_gsi_btn.setEnabled(True)
-        elif super_found:
-            self.log("[INFO] Super partition detected; fastbootd may be required.")
-            # Ask user to reboot to fastbootd
+        elif super_partition_size:
+            self.log(f"[INFO] Detected super partition with size: {super_partition_size:.2f} GB")
+            self.status_label.setText("Super partition detected. Fastbootd reboot required.")
             self.ask_for_fastbootd_reboot()
         else:
-            self.log("[ERROR] Could not detect 'system' or 'super' partitions. Check device connection.")
+            self.log("[ERROR] Neither 'super' nor 'system' partitions detected.")
+            self.status_label.setText("Partition check failed. See log.")
 
     def ask_for_fastbootd_reboot(self, retry=False):
         result = QMessageBox.question(
@@ -474,26 +389,21 @@ class GSIFlasherUI(QMainWindow):
         )
         if result == QMessageBox.StandardButton.Yes:
             self.log("[INFO] Rebooting device to fastbootd...")
-            fastboot_cmd = "fastboot.exe" if os.name == "nt" else "fastboot"
+            fastboot_cmd = self._tool_path("fastboot")
             # Non-blocking reboot call
             self.run_command_async([fastboot_cmd, "reboot", "fastboot"], lambda o: self.verify_fastbootd_mode())
-            # Start timer to detect fastbootd mode
-            if not self.usb_timer.isActive():
-                self.usb_timer.start(1200)
         elif not retry:
             QMessageBox.critical(self, "Error", "GSI flash requires fastbootd in many cases. Reboot to fastbootd and try again.")
             QTimer.singleShot(100, lambda: self.ask_for_fastbootd_reboot(retry=True))
 
     def verify_fastbootd_mode(self, output=None):
         # After attempting reboot to fastbootd, prompt the user to confirm
-        if self.usb_timer.isActive():
-            self.usb_timer.stop()
         self.log("[INFO] Please confirm device is in fastbootd mode.")
         result = QMessageBox.question(self, "Confirm fastbootd", "Are you now in fastbootd mode?",
                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if result == QMessageBox.StandardButton.Yes:
             self.fastbootd_confirmed = True
-            fastboot_cmd = "fastboot.exe" if os.name == "nt" else "fastboot"
+            fastboot_cmd = self._tool_path("fastboot")
             self.run_command_async([fastboot_cmd, "devices"], self.check_fastbootd_response)
             if self.gsi_image_path:
                 self.flash_gsi_btn.setEnabled(True)
@@ -536,25 +446,14 @@ class GSIFlasherUI(QMainWindow):
 
         self.log("[INFO] Starting flash (fastboot).")
         self.flash_gsi_btn.setEnabled(False)
-        self.progress.setValue(0)
 
-        fastboot_cmd = "fastboot.exe" if os.name == "nt" else "fastboot"
+        fastboot_cmd = self._tool_path("fastboot")
         # Default conservative target: 'system' (original scripts may vary)
         cmd = [fastboot_cmd, "flash", "system", self.gsi_image_path]
-        # Stream logs and handle completion
-        runner = CommandRunner(cmd, self.platform_tools_path)
-        runner.signals.log.connect(self.log)
-        # simple progress heuristic: bump a little on each line
-        def on_line_bump(line):
-            v = self.progress.value()
-            v = min(95, v + 5)
-            self.progress.setValue(v)
-        runner.signals.log.connect(on_line_bump)
-
-        def on_finished(output):
-            self.progress.setValue(100)
-            # heuristic check for success message
-            if output and ("finished" in output.lower() or "success" in output.lower()):
+        
+        # Thread will emit stdout logs directly
+        def on_finished(output, error):
+            if not error and ("finished" in output.lower() or "success" in output.lower()):
                 self.log("[INFO] Flash finished (heuristic success).")
                 QMessageBox.information(self, "Flash Complete", "Flashing appears to have completed. Consider wiping data if required.")
             else:
@@ -562,10 +461,7 @@ class GSIFlasherUI(QMainWindow):
                 QMessageBox.critical(self, "Flash Completed", "Flash ended. Check logs for success/failure.")
             self.flash_gsi_btn.setEnabled(True)
 
-        t = threading.Thread(target=runner.run, daemon=True)
-        runner.signals.finished.connect(on_finished)
-        t.start()
-        self.command_threads.append(t)
+        self.run_command_async(cmd, lambda o: on_finished(o, False))
 
     def post_flash_actions(self, output):
         # kept for compatibility; older code used this callback style
@@ -581,7 +477,7 @@ class GSIFlasherUI(QMainWindow):
                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if ok == QMessageBox.StandardButton.Yes:
             self.log(f"[INFO] Deleting {partition_name}_a and {partition_name}_b...")
-            fastboot_cmd = "fastboot.exe" if os.name == "nt" else "fastboot"
+            fastboot_cmd = self._tool_path("fastboot")
             # Chain commands: run delete for _a then _b (simple sequential callbacks)
             def cb1(_):
                 self.run_command_async([fastboot_cmd, "delete-logical-partition", f"{partition_name}_b"], lambda o: self.log(f"[INFO] Deletion finished for {partition_name}."))
@@ -600,7 +496,7 @@ class GSIFlasherUI(QMainWindow):
                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if ans == QMessageBox.StandardButton.Yes:
             self.log("[INFO] Rebooting device via fastboot.")
-            fastboot_cmd = "fastboot.exe" if os.name == "nt" else "fastboot"
+            fastboot_cmd = self._tool_path("fastboot")
             self.run_command_async([fastboot_cmd, "reboot"], lambda o: self.log("[INFO] Reboot command issued."))
 
     # ---- Cleanup ----
@@ -614,13 +510,3 @@ class GSIFlasherUI(QMainWindow):
         super().closeEvent(event)
 
 
-# ---- Standalone runner ----
-def run_gsi_flasher(platform_tools_path=None):
-    app = QApplication(sys.argv)
-    win = GSIFlasherUI(platform_tools_path=platform_tools_path)
-    win.show()
-    return app.exec()
-
-
-if __name__ == "__main__":
-    sys.exit(run_gsi_flasher())

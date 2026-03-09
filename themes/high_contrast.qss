@@ -6,6 +6,8 @@
    accent:        #00b0ff
    text:          #ffffff
    secondary_txt: #aaaaaa
+   quickadb_log_primary:   #ffffff
+   quickadb_log_secondary: #aaaaaa
    button_txt:    #ffffff
 */
 

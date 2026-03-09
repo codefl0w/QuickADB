@@ -1,23 +1,23 @@
 '''
 Main page. Handles some variables and can do simple adb / fastboot tasks, so it's esentially enough to run on its own.
-Other adb tasks that require a bit more attention are handled by the adbfunc.py module.
+Other adb tasks that require more code, such as the device spec dialog, are handled by the adbfunc.py module.
 
 '''
 import sys
 import os
 import threading
 import subprocess
-import webbrowser
 import requests
 import time
 from datetime import datetime
 from functools import partial
 from typing import Optional, List, Tuple, Callable
 
-
-script_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = os.path.dirname(script_dir)
-sys.path.insert(0, root_dir)
+# Setup root dir to allow imports relative to project root
+from util.resource import get_root_dir, resource_path, get_clean_env, open_url_safe, resolve_platform_tool
+root_dir = get_root_dir()
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 
 from modules.terminal import show_terminal_window
 from modules.payloaddumper import show_payload_dumper_window
@@ -27,14 +27,15 @@ from modules.fileexplorer import ADBFileExplorer
 import modules.appmanager as appmanager
 from modules.partitionmanager import PartitionManager
 from util.thememanager import ThemeManager
-import adbfunc
+import main.adbfunc as adbfunc
+import modules.bootanimcreator as bootanimcreator
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QPushButton, QLabel, QFrame,
     QGridLayout, QVBoxLayout, QHBoxLayout, QTextEdit, QMessageBox,
     QFileDialog, QScrollArea, QDialog, QTextBrowser
 )
-from PyQt6.QtGui import QIcon, QTextCursor, QColor
+from PyQt6.QtGui import QTextCursor, QColor
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 try:
@@ -43,63 +44,7 @@ except ImportError:
     QSvgWidget = None
 
 
-class CommandRunner(QThread):
-    """
-    Runs shell commands in a separate thread to avoid blocking the GUI.
-    Streams stdout and stderr in real-time.
-
-    Signals:
-    output_signal(str, str): Emits each line of output with a tag ("Output" or "Error").
-
-    """
-    output_signal = pyqtSignal(str, str)
-
-    def __init__(self, command: str, platform_tools_path: str):
-        super().__init__()
-        self.command = command
-        self.platform_tools_path = platform_tools_path
-
-    def _stream_reader(self, stream, tag: str):
-        """Reads a stream line-by-line and emits lines via a signal."""
-        try:
-            for line in iter(stream.readline, ''):
-                self.output_signal.emit(line.rstrip("\n"), tag)
-        except Exception as e:
-            self.output_signal.emit(f"Reader error: {e}", "Error")
-        finally:
-            try:
-                stream.close()
-            except IOError:
-                pass
-
-    def run(self):
-        """Executes the command and starts threads to monitor its output."""
-        try:
-            process = subprocess.Popen(
-                self.command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                shell=True,
-                cwd=self.platform_tools_path,
-                text=True,
-                bufsize=1  # Line-buffered
-            )
-
-            # Start reader threads for stdout and stderr to prevent blocking
-            t_out = threading.Thread(target=self._stream_reader, args=(process.stdout, "Output"), daemon=True)
-            t_err = threading.Thread(target=self._stream_reader, args=(process.stderr, "Error"), daemon=True)
-
-            t_out.start()
-            t_err.start()
-
-            process.wait()  # Wait for the subprocess to complete
-            t_out.join()    # Ensure threads finish
-            t_err.join()
-
-        except FileNotFoundError:
-            self.output_signal.emit(f"Error: Command not found. Is '{self.command.split()[0]}' in your PATH or platform-tools?", "Error")
-        except Exception as e:
-            self.output_signal.emit(f"Execution Error: {str(e)}", "Error")
+from main.adbfunc import CommandRunner
 
 
 class QuickADBApp(QMainWindow):
@@ -121,7 +66,7 @@ class QuickADBApp(QMainWindow):
         # State 
         self.adb_version = "Unknown"
         self.fastboot_version = "Unknown"
-        self.platform_tools_path = os.path.join(root_dir, 'platform-tools')
+        self.platform_tools_path = resource_path('platform-tools')
         self.command_runner = None
         self.payload_dumper_window = None
         self.super_dumper_window = None
@@ -130,12 +75,13 @@ class QuickADBApp(QMainWindow):
         self.app_manager_window = None
         self.gsi_window = None
         self.partition_manager = None
+        self.bootanim_creator_window = None
 
         # Init
         self.init_ui()
+        ThemeManager.apply_theme(self)
         self.fetch_versions()
         self.log_initial_info()
-        ThemeManager.apply_theme(self)
         adbfunc.add_methods_to_class(self)
         self.check_for_update()
 
@@ -144,7 +90,6 @@ class QuickADBApp(QMainWindow):
     def init_ui(self):
         self.setWindowTitle("QuickADB")
         self.setMinimumSize(1050, 620)
-        self.setWindowIcon(QIcon(os.path.join(script_dir, "toolicon.ico")))
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -152,15 +97,12 @@ class QuickADBApp(QMainWindow):
         main_layout.setContentsMargins(15, 10, 15, 10)
 
         # Logo
-        logo_container = QWidget()
-        logo_layout = QVBoxLayout(logo_container)
-        logo_layout.setContentsMargins(0, 0, 0, 0)
-        svg_path = os.path.join(root_dir, "res", "logo.svg") # PNG sucks when it comes to scalability. The logo doesn't scale anyways but whatever.
-        if QSvgWidget and os.path.exists(svg_path):
-            logo_widget = QSvgWidget(svg_path)
-            logo_widget.setFixedSize(250, 65)
-            logo_layout.addWidget(logo_widget, 0, Qt.AlignmentFlag.AlignCenter)
-        main_layout.addWidget(logo_container)
+        self.logo_container = QWidget()
+        self.logo_layout = QVBoxLayout(self.logo_container)
+        self.logo_layout.setContentsMargins(0, 0, 0, 0)
+        self.logo_widget = None
+        self._refresh_logo_for_current_theme()
+        main_layout.addWidget(self.logo_container)
 
         # Menu buttons
         menu_frame = QFrame()
@@ -234,18 +176,20 @@ class QuickADBApp(QMainWindow):
 
         self.show()
 
-    def create_menu_button(self, text: str, callback: Callable) -> QPushButton:
-        """Creates a standard menu button."""
+    def _make_button(self, text: str, callback: Callable) -> QPushButton:
+        """Creates a standard sized button and wires its click callback."""
         button = QPushButton(text)
         button.setFixedSize(self.BUTTON_WIDTH, self.BUTTON_HEIGHT)
         button.clicked.connect(callback)
         return button
 
+    def create_menu_button(self, text: str, callback: Callable) -> QPushButton:
+        """Creates a standard menu button."""
+        return self._make_button(text, callback)
+
     def create_command_button(self, text: str, callback: Callable, row: int, column: int) -> QPushButton:
         """Creates a command button and adds it to the grid layout."""
-        button = QPushButton(text)
-        button.setFixedSize(self.BUTTON_WIDTH, self.BUTTON_HEIGHT)
-        button.clicked.connect(callback)
+        button = self._make_button(text, callback)
         self.commands_layout.addWidget(button, row, column)
         return button
 
@@ -263,7 +207,7 @@ class QuickADBApp(QMainWindow):
         if not os.path.isdir(self.platform_tools_path):
             QMessageBox.critical(self, "Error", f"platform-tools folder not found at: {self.platform_tools_path}")
             return None
-        return os.path.join(self.platform_tools_path, name)
+        return resolve_platform_tool(self.platform_tools_path, name)
 
     def run_command_async(self, command: str, description: str, command_type: str):
         """Executes a command asynchronously in a separate thread."""
@@ -271,6 +215,7 @@ class QuickADBApp(QMainWindow):
         self.log_action(f"[{current_time}] Executing {command_type} command: {description}", "#00ffff")
 
         self.command_runner = CommandRunner(command, self.platform_tools_path)
+        self.command_runner.env = get_clean_env()
         self.command_runner.output_signal.connect(self.log_terminal_output)
         self.command_runner.start()
 
@@ -283,7 +228,7 @@ class QuickADBApp(QMainWindow):
 
     # --- Command Button Sections ---
 
-    def show_adb_commands(self):
+    def show_adb_commands(self): # If a command can be executed without needing a path (e.g. adb devices), it's executed directly. Otherwise, it's executed by adbfunc.py.
         """Populates the grid with ADB command buttons."""
         commands = [
             ("Check for Devices", lambda: self.run_command_async("adb devices", "Check for Devices", "ADB")),
@@ -341,18 +286,19 @@ class QuickADBApp(QMainWindow):
     def show_advanced(self):
         """Populates the grid with advanced tool buttons."""
         commands = [
-            ("Payload.bin Dumper", self.show_payload_dumper),
-            ("ADB App Manager", self.launch_app_manager),
+            ("Dump payload.bin", self.show_payload_dumper),
+            ("App Manager", self.launch_app_manager),
             ("GSI Flasher", self.open_gsi_flasher),
             ("Dump super.img", self.launch_super_dumper),
-            ("Partition Manager", self.open_partition_manager),
+            ("Partition Manager (#)", self.open_partition_manager),
             ("File Explorer", self.open_file_explorer),
         ]
         self._populate_commands_grid(commands)
 
     def show_misc(self):
         """Populates the grid with miscellaneous command buttons."""
-        commands = [("Device Specifications", self.show_device_info)]
+        commands = [("Device Specifications", self.show_device_info),
+                    ("Boot Animation Creator", self.launch_bootanim_creator)]
         self._populate_commands_grid(commands)
 
     # --- Feature Implementations & Launchers ---
@@ -366,34 +312,74 @@ class QuickADBApp(QMainWindow):
             cmd = f'fastboot flash {partition_name} "{file_path}"'
             self.run_command_async(cmd, f"Flashing {partition_name}", "Fastboot")
 
-    def open_terminal(self):
-        self.terminal_window = show_terminal_window(
-            app_version=self.APP_VERSION, app_suffix=self.APP_SUFFIX,
-            adb_version=self.adb_version, fastboot_version=self.fastboot_version,
-        )
-
     def open_file_explorer(self):
-        self.file_explorer_window = ADBFileExplorer(platform_tools_path=self.platform_tools_path)
-        self.file_explorer_window.show()
+        def _make():
+            w = ADBFileExplorer()
+            w.show()
+            return w
+        self._focus_or_launch('file_explorer_window', _make)
 
     def launch_app_manager(self):
-        self.app_manager_window = appmanager.run_app_manager(self.platform_tools_path)
+        self._focus_or_launch(
+            'app_manager_window',
+            lambda: appmanager.run_app_manager(self.platform_tools_path)
+        )
 
     def open_gsi_flasher(self):
-        self.gsi_window = GSIFlasherUI()
-        self.gsi_window.show()
+        def _make():
+            w = GSIFlasherUI()
+            w.show()
+            return w
+        self._focus_or_launch('gsi_window', _make)
 
     def open_partition_manager(self):
-        self.partition_manager = PartitionManager(self.platform_tools_path)
-        self.partition_manager.show()
+        def _make():
+            w = PartitionManager(self.platform_tools_path)
+            w.show()
+            return w
+        self._focus_or_launch('partition_manager', _make)
 
     def show_payload_dumper(self):
-        _, self.payload_dumper_window = show_payload_dumper_window(QApplication.instance())
+        self._focus_or_launch(
+            'payload_dumper_window',
+            lambda: show_payload_dumper_window(QApplication.instance())[1]
+        )
 
     def launch_super_dumper(self):
-        self.super_dumper_window = show_super_img_dumper(self)
+        self._focus_or_launch(
+            'super_dumper_window',
+            lambda: show_super_img_dumper(self)
+        )
 
-    # --- Placeholder Methods ---
+    def _focus_or_launch(self, attr: str, factory: Callable):
+        """Raise the existing window if visible, otherwise create it via factory."""
+        try:
+            window = getattr(self, attr)
+            if window is not None and window.isVisible():
+                window.raise_()
+                window.activateWindow()
+                return
+        except RuntimeError:
+            pass
+        setattr(self, attr, factory())
+
+    def open_terminal(self):
+        self._focus_or_launch(
+            'terminal_window',
+            lambda: show_terminal_window(
+                app_version=self.APP_VERSION, app_suffix=self.APP_SUFFIX,
+                adb_version=self.adb_version, fastboot_version=self.fastboot_version,
+            )
+        )
+
+    def launch_bootanim_creator(self):
+        """Launches the Boot Animation Creator module."""
+        self._focus_or_launch(
+            'bootanim_creator_window',
+            lambda: bootanimcreator.run_bootanim_creator(self)
+        )
+
+    # --- Placeholder Methods. Filled in by adbfunc.py ---
     def open_pull_window(self): QMessageBox.information(self, "Not Implemented", "ADB Pull feature coming soon.")
     def open_push_window(self): QMessageBox.information(self, "Not Implemented", "ADB Push feature coming soon.")
     def install_apk(self): QMessageBox.information(self, "Not Implemented", "Install APK feature coming soon.")
@@ -412,12 +398,45 @@ class QuickADBApp(QMainWindow):
         no_update = pyqtSignal()
         error = pyqtSignal(str)
         def __init__(self, current_version): super().__init__(); self.current_version = current_version
+
+        @staticmethod
+        def _version_tuple(version_text: str) -> Tuple[int, ...]:
+            cleaned = (version_text or "").strip().lstrip("vV")
+            if not cleaned:
+                return (0,)
+            values = []
+            for part in cleaned.split("."):
+                digits = ""
+                for ch in part:
+                    if ch.isdigit():
+                        digits += ch
+                    else:
+                        break
+                values.append(int(digits) if digits else 0)
+            return tuple(values) if values else (0,)
+
+        @classmethod
+        def _is_newer(cls, latest: str, current: str) -> bool:
+            latest_tuple = cls._version_tuple(latest)
+            current_tuple = cls._version_tuple(current)
+            max_len = max(len(latest_tuple), len(current_tuple))
+            latest_padded = latest_tuple + (0,) * (max_len - len(latest_tuple))
+            current_padded = current_tuple + (0,) * (max_len - len(current_tuple))
+            return latest_padded > current_padded
+
         def run(self):
             try:
-                response = requests.get(f"{QuickADBApp.GITHUB_URL}/releases/latest", headers={"Accept": "application/json"})
+                response = requests.get(
+                    "https://api.github.com/repos/codefl0w/QuickADB/releases/latest",
+                    headers={
+                        "Accept": "application/vnd.github+json",
+                        "User-Agent": "QuickADB"
+                    },
+                    timeout=8
+                )
                 response.raise_for_status()
-                latest_version = response.json().get("tag_name", "")
-                if latest_version and latest_version > self.current_version:
+                latest_version = (response.json() or {}).get("tag_name", "").strip()
+                if latest_version and self._is_newer(latest_version, self.current_version):
                     self.update_available.emit(latest_version, self.current_version)
                 else: self.no_update.emit()
             except requests.RequestException as e: self.error.emit(f"Could not check for updates: {e}")
@@ -429,11 +448,26 @@ class QuickADBApp(QMainWindow):
         threading.Thread(target=self._fetch_version, args=("fastboot", "--version", "fastboot_version"), daemon=True).start()
 
     def _fetch_version(self, executable: str, command: str, version_attr: str):
-        """Worker function to get version info from a command-line tool."""
+        """Worker function to get version info."""
         try:
             exe_path = self._get_executable_path(executable)
             if not exe_path: return
-            result = subprocess.run([exe_path, command], capture_output=True, text=True, check=False)
+            # Windows specific: Create a new process group and hide the console window.
+            creationflags = 0
+            if sys.platform == "win32":
+                creationflags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP |
+                    subprocess.CREATE_NO_WINDOW
+                )
+
+            result = subprocess.run(
+                [exe_path, command], 
+                capture_output=True, 
+                text=True, 
+                check=False, 
+                env=get_clean_env(),
+                creationflags=creationflags
+            )
             if result.returncode == 0:
                 setattr(self, version_attr, result.stdout.splitlines()[0])
             else:
@@ -454,28 +488,31 @@ class QuickADBApp(QMainWindow):
             "Would you like to visit the GitHub releases page to download it?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
-            webbrowser.open(f"{self.GITHUB_URL}/releases")
+            open_url_safe(f"{self.GITHUB_URL}/releases")
 
     # --- Logging ---
 
-    def log_action(self, action: str, color: Optional[str] = None):
+    def _append_log(self, text: str, color: Optional[str]):
+        """Low-level helper: append colored text to the log widget."""
         self.logs_text.moveCursor(QTextCursor.MoveOperation.End)
-        if color: self.logs_text.setTextColor(QColor(color))
-        self.logs_text.insertPlainText(action + "\n")
-        self.logs_text.setTextColor(QColor("black")) # Reset to default
+        if color:
+            self.logs_text.setTextColor(QColor(color))
+        else:
+            self.logs_text.setTextColor(QColor(ThemeManager.TEXT_COLOR_PRIMARY))
+        self.logs_text.insertPlainText(text + "\n")
+        self.logs_text.setTextColor(QColor(ThemeManager.TEXT_COLOR_PRIMARY))
         self.logs_text.ensureCursorVisible()
 
+    def log_action(self, action: str, color: Optional[str] = None):
+        self._append_log(action, color)
+
     def log_terminal_output(self, output: str, tag: str = ""):
-        self.logs_text.moveCursor(QTextCursor.MoveOperation.End)
         color = "#ff4d4d" if "error" in tag.lower() else "#2edf85"
-        self.logs_text.setTextColor(QColor(color))
-        self.logs_text.insertPlainText(output + "\n")
-        self.logs_text.setTextColor(QColor("black"))
-        self.logs_text.ensureCursorVisible()
+        self._append_log(output, color)
 
     def log_initial_info(self):
         current_time = datetime.now().strftime("%d/%m/%Y, %H:%M")
-        self.logs_text.setTextColor(QColor("#ffffff"))
+        self.logs_text.setTextColor(QColor(ThemeManager.TEXT_COLOR_PRIMARY))
         self.logs_text.append(f"{current_time} - Current version: {self.APP_VERSION} {self.APP_SUFFIX}\n\n"
                               "Some features are experimental and are not expected to work on every device. "
                               "Look for the warning icon (⚠️) to distinguish them.\n")
@@ -487,10 +524,11 @@ class QuickADBApp(QMainWindow):
                 f.write(self.logs_text.toPlainText())
 
     # --- Event Handlers & Dialogs ---
-    def view_github(self): webbrowser.open(self.GITHUB_URL)
-    def view_xda_thread(self): webbrowser.open(self.XDA_URL)
-    def donate(self): webbrowser.open(self.DONATE_URL)
-    def contact(self): webbrowser.open(self.CONTACT_EMAIL)
+    def _open_url(self, url: str): open_url_safe(url)
+    def view_github(self): self._open_url(self.GITHUB_URL)
+    def view_xda_thread(self): self._open_url(self.XDA_URL)
+    def donate(self): self._open_url(self.DONATE_URL) # please?
+    def contact(self): self._open_url(self.CONTACT_EMAIL) 
 
     def show_about(self, event=None):
         dialog = QDialog(self)
@@ -519,23 +557,57 @@ class QuickADBApp(QMainWindow):
     def show_theme_selector(self):
         dialog = QDialog(self); dialog.setWindowTitle("Select Theme")
         layout = QVBoxLayout(dialog); layout.addWidget(QLabel("Available Themes:"))
-        themes_path = os.path.join(os.getcwd(), "themes")
+        themes_path = resource_path("themes")
         found = False
         if os.path.exists(themes_path):
             for filename in os.listdir(themes_path):
                 if filename.lower().endswith(".qss"):
                     theme_name = os.path.splitext(filename)[0].capitalize()
                     btn = QPushButton(theme_name)
-                    btn.clicked.connect(partial(ThemeManager.load_qss, self, os.path.join(themes_path, filename)))
+                    btn.clicked.connect(partial(self._apply_selected_theme, filename))
                     layout.addWidget(btn)
                     found = True
-        classic_btn = QPushButton("Classic"); classic_btn.clicked.connect(lambda: ThemeManager.apply_classic(self))
-        layout.addWidget(classic_btn)
+        default_btn = QPushButton("Default"); default_btn.clicked.connect(partial(self._apply_selected_theme, "none"))
+        layout.addWidget(default_btn)
         if not found: layout.addWidget(QLabel("(No .qss themes found)"))
         dialog.exec()
 
+    def _apply_selected_theme(self, theme_name: str):
+        ThemeManager.write_theme_name(theme_name)
+        ThemeManager.apply_theme(self)
+        self._refresh_logo_for_current_theme()
+        self._recolor_existing_logs()
+
+    def _refresh_logo_for_current_theme(self):
+        if not QSvgWidget:
+            return
+        ThemeManager.ensure_default()
+        try:
+            theme_name = ThemeManager.read_theme_name().strip().lower()
+        except Exception:
+            theme_name = "dark.qss"
+        dark_themes = {"dark.qss", "high_contrast.qss"}
+        logo_name = "logo.svg" if theme_name in dark_themes else "logo_light.svg"
+        svg_path = resource_path(os.path.join("res", logo_name))
+        if not os.path.exists(svg_path):
+            svg_path = resource_path("res/logo.svg")
+        if self.logo_widget is not None:
+            self.logo_layout.removeWidget(self.logo_widget)
+            self.logo_widget.deleteLater()
+        self.logo_widget = QSvgWidget(svg_path)
+        self.logo_widget.setFixedSize(250, 65)
+        self.logo_layout.addWidget(self.logo_widget, 0, Qt.AlignmentFlag.AlignCenter)
+
+    def _recolor_existing_logs(self):
+        existing_text = self.logs_text.toPlainText()
+        self.logs_text.clear()
+        self.logs_text.setTextColor(QColor(ThemeManager.TEXT_COLOR_PRIMARY))
+        if existing_text:
+            self.logs_text.setPlainText(existing_text)
+            self.logs_text.moveCursor(QTextCursor.MoveOperation.End)
+
     def show_whats_new(self):
-        html_path = os.path.join(root_dir, "res", "whatsnew.html")
+        html_path = resource_path("res/whatsnew.html")
         if not os.path.exists(html_path):
             QMessageBox.warning(self, "File Not Found", f"'whatsnew.html' not found at:\n{html_path}")
             return
@@ -551,8 +623,3 @@ class QuickADBApp(QMainWindow):
             dialog.exec()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not load 'whatsnew.html':\n{e}")
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    main_window = QuickADBApp()
-    sys.exit(app.exec())

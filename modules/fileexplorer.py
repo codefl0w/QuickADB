@@ -1,5 +1,5 @@
 '''
-QuickADB file explorer. List and create directories, push / pull files, execute scripts, preview images,
+fileexplorer.py - QuickADB file explorer. List and create directories, push / pull files, execute scripts, preview images,
 edit text documents, manage UNIX permissions and view their properties, as well as the usual file explorer stuff like
 cut / copy & paste and renaming.
 
@@ -8,16 +8,14 @@ cut / copy & paste and renaming.
 import sys
 import os
 import subprocess
-import threading
 import tempfile
 import base64
-import time
 import re
-from datetime import datetime
 
-script_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = os.path.dirname(script_dir)
-sys.path.insert(0, root_dir)
+from util.resource import get_root_dir, resource_path, resolve_platform_tool
+root_dir = get_root_dir()
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 
 from util.thememanager import ThemeManager
 
@@ -50,8 +48,17 @@ class ADBThread(QThread):
             # If command begins with adb executable name omitted, prefix it
             if full_command[0] != self.adb_path:
                 full_command = [self.adb_path] + full_command
+
+            # Windows specific: Create a new process group and hide the console window.
+            creationflags = 0
+            if os.name == 'nt':
+                creationflags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP |
+                    subprocess.CREATE_NO_WINDOW
+                )
+
             # Run and capture output
-            output = subprocess.check_output(full_command, text=True, stderr=subprocess.STDOUT)
+            output = subprocess.check_output(full_command, text=True, stderr=subprocess.STDOUT, creationflags=creationflags)
             self.command_finished.emit(output, False)
         except subprocess.CalledProcessError as e:
             # Include output if available
@@ -80,6 +87,14 @@ class TransferRunner(QThread):
     def run(self):
         try:
             cmd = [self.adb_path] + self.args
+            # Windows specific: Create a new process group and hide the console window.
+            creationflags = 0
+            if os.name == 'nt':
+                creationflags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP |
+                    subprocess.CREATE_NO_WINDOW
+                )
+
             # Use universal_newlines & line-buffering to allow streaming if adb prints progress
             proc = subprocess.Popen(
                 cmd,
@@ -87,7 +102,8 @@ class TransferRunner(QThread):
                 stderr=subprocess.STDOUT,
                 cwd=self.cwd,
                 universal_newlines=True,
-                bufsize=1
+                bufsize=1,
+                creationflags=creationflags
             )
 
             last_line = ""
@@ -116,15 +132,14 @@ class ADBFileExplorer(QMainWindow):
     VIEWABLE_TEXT_EXTENSIONS = ("txt", "log", "json", "xml", "html", "csv", "md", "ini", "conf", "prop", "sh")
     VIEWABLE_IMAGE_EXTENSIONS = ("png", "jpg", "jpeg", "gif", "bmp")
 
-    def __init__(self, platform_tools_path=None):
+    def __init__(self):
         super().__init__()
         self.setWindowTitle("QuickADB File Explorer")
         self.setMinimumSize(1000, 600)
 
         # paths and adb
-        self.script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.platform_tools_path = os.path.join(root_dir, 'platform-tools')
-        self.adb_path = os.path.join(self.platform_tools_path, 'adb.exe' if os.name == 'nt' else 'adb') # for reasons my brain cannot comprehend, I cannot get the file explorer to work precisely without explicitly stating the adb binary directory.
+        self.platform_tools_path = resource_path('platform-tools')
+        self.adb_path = resolve_platform_tool(self.platform_tools_path, 'adb')
 
         # state
         self.current_path = "/storage/emulated/0"
@@ -140,6 +155,11 @@ class ADBFileExplorer(QMainWindow):
         ThemeManager.apply_theme(self)
         self.refresh_file_list()
 
+    @property
+    def is_root(self):
+        """Returns True if the root access checkbox is checked."""
+        return hasattr(self, 'root_access_checkbox') and self.root_access_checkbox.isChecked()
+
     # -----------------------------
     # Thread Management
     # -----------------------------
@@ -154,8 +174,23 @@ class ADBFileExplorer(QMainWindow):
         try:
             self.threads.remove(thread)
         except ValueError:
-            # Ignore if thread was already removed for some reason
             pass
+
+    def _root_cmd(self, cmd: str) -> str:
+        """Wrap cmd in su -c '...' when root access is active."""
+        return f"su -c \"{cmd}\"" if self.is_root else cmd
+
+    def _dpath(self, *parts) -> str:
+        """Join path parts and normalize to forward-slash device path."""
+        return os.path.join(*parts).replace("\\", "/")
+
+    def _make_progress(self, label: str) -> QProgressDialog:
+        """Create a modal indeterminate progress dialog."""
+        dlg = QProgressDialog(label, "Cancel", 0, 0, self)
+        dlg.setWindowTitle("File Transfer")
+        dlg.setModal(True)
+        dlg.show()
+        return dlg
 
     # -----------------------------
     # UI Initialization (grouped)
@@ -192,10 +227,17 @@ class ADBFileExplorer(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+
+
         edit_menu = menubar.addMenu("Edit")
         new_folder_action = QAction("New Folder", self)
         new_folder_action.triggered.connect(self.create_new_folder)
         edit_menu.addAction(new_folder_action)
+
+        new_file_action = QAction("New File", self)
+        new_file_action.triggered.connect(self.create_new_file)
+        edit_menu.addAction(new_file_action)
+        
         edit_menu.addSeparator()
 
         copy_action = QAction("Copy", self)
@@ -232,18 +274,21 @@ class ADBFileExplorer(QMainWindow):
 
         toolbar.addSeparator()
 
-        up_button = QPushButton("⬆ Up")
-        up_button.clicked.connect(self.go_to_parent_directory)
-        toolbar.addWidget(up_button)
 
         refresh_button = QPushButton("🔄 Refresh")
         refresh_button.clicked.connect(self.refresh_file_list)
         toolbar.addWidget(refresh_button)
 
+
         toolbar.addSeparator()
         new_folder_button = QPushButton("📁 New Folder")
         new_folder_button.clicked.connect(self.create_new_folder)
         toolbar.addWidget(new_folder_button)
+
+        
+        new_file_button = QPushButton("📄 New File")
+        new_file_button.clicked.connect(self.create_new_file)
+        toolbar.addWidget(new_file_button)
 
         pull_button = QPushButton("⬇ Pull")
         pull_button.clicked.connect(self.pull_selected_items)
@@ -275,11 +320,6 @@ class ADBFileExplorer(QMainWindow):
             "Use root access to view / modify root directories. Grant root access on your device first."
         )
         toolbar.addWidget(self.root_access_checkbox)
-
-        spacer2 = QWidget()
-        spacer2.setObjectName("TBspacer")
-        spacer2.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        toolbar.addWidget(spacer2)
 
     def init_path_bar(self):
         self.path_layout = QHBoxLayout()
@@ -315,18 +355,22 @@ class ADBFileExplorer(QMainWindow):
     # -----------------------------
     # Navigation / path operations
     # -----------------------------
+    def _navigate_to(self, new_path: str, push_history: bool = True):
+        """Central navigation: update path, history and refresh."""
+        if not new_path or new_path == self.current_path:
+            return
+        if push_history:
+            self.history_stack.append(self.current_path)
+        self.forward_stack.clear()
+        self.current_path = new_path
+        self.path_field.setText(self.current_path)
+        self.back_button.setEnabled(bool(self.history_stack))
+        self.forward_button.setEnabled(False)
+        self.refresh_file_list()
+
     def change_path(self):
         """Navigates to the path entered in the path field."""
-        new_path = self.path_field.text().strip()
-        if new_path and new_path != self.current_path:
-            self.history_stack.append(self.current_path)
-            self.forward_stack.clear()
-            self.forward_button.setEnabled(False)
-
-            self.current_path = new_path
-            self.path_field.setText(self.current_path)
-            self.refresh_file_list()
-            self.back_button.setEnabled(True)
+        self._navigate_to(self.path_field.text().strip())
 
     def go_back(self):
         """Navigates to the previous directory in the history."""
@@ -334,11 +378,8 @@ class ADBFileExplorer(QMainWindow):
             return
         self.forward_stack.append(self.current_path)
         self.forward_button.setEnabled(True)
-
-        self.current_path = self.history_stack.pop()
-        self.path_field.setText(self.current_path)
-        self.refresh_file_list()
-        self.back_button.setEnabled(bool(self.history_stack))
+        prev = self.history_stack.pop()
+        self._navigate_to(prev, push_history=False)
 
     def go_forward(self):
         """Navigates to the next directory in the history."""
@@ -346,24 +387,15 @@ class ADBFileExplorer(QMainWindow):
             return
         self.history_stack.append(self.current_path)
         self.back_button.setEnabled(True)
-
-        self.current_path = self.forward_stack.pop()
+        nxt = self.forward_stack.pop()
+        self.current_path = nxt
         self.path_field.setText(self.current_path)
-        self.refresh_file_list()
         self.forward_button.setEnabled(bool(self.forward_stack))
+        self.refresh_file_list()
 
     def go_to_parent_directory(self):
         """Navigates up to the parent directory."""
-        parent_path = os.path.dirname(self.current_path)
-        if parent_path and parent_path != self.current_path:
-            self.history_stack.append(self.current_path)
-            self.forward_stack.clear()
-            self.forward_button.setEnabled(False)
-
-            self.current_path = parent_path
-            self.path_field.setText(self.current_path)
-            self.refresh_file_list()
-            self.back_button.setEnabled(True)
+        self._navigate_to(os.path.dirname(self.current_path))
 
     # -----------------------------
     # Directory listing
@@ -375,12 +407,11 @@ class ADBFileExplorer(QMainWindow):
         self.table.setRowCount(0)
         self.symlink_targets.clear()
 
-        # Build ls command; use su -c when root requested
-        if hasattr(self, 'root_access_checkbox') and self.root_access_checkbox.isChecked():
-            cmd = ['shell', f'su -c "ls -la \\"{self.current_path}\\""']
+        if self.is_root:
+            cmd = ['shell', f'su -c "ls -la \\"{self.current_path}\\" 2>&1"']
             self.statusBar.showMessage("Loading directory contents with root access...")
         else:
-            cmd = ['shell', f'ls -la "{self.current_path}"']
+            cmd = ['shell', f'ls -la "{self.current_path}" 2>&1']
 
         ls_thread = ADBThread(self.adb_path, cmd, [])
         ls_thread.command_finished.connect(self.process_directory_listing)
@@ -396,9 +427,6 @@ class ADBFileExplorer(QMainWindow):
         permission_issue = False
         if error and output.strip():
             self.statusBar.showMessage("Directory loaded with some warnings")
-            lower_out = output.lower()
-            if "permission denied" in lower_out or output.startswith("ls:") or "cannot access" in lower_out:
-                permission_issue = True
         
         # Reset table and prepare for new data
         self.table.setRowCount(0)
@@ -408,6 +436,7 @@ class ADBFileExplorer(QMainWindow):
             if not line.strip() or line.startswith("total"):
                 continue
             if "Permission denied" in line or line.startswith("ls:") or line.startswith("cannot access"):
+                permission_issue = True
                 continue
 
             # IMPROVEMENT: Use maxsplit=7 to correctly handle filenames with spaces.
@@ -522,28 +551,17 @@ class ADBFileExplorer(QMainWindow):
 
         if file_type == "FOLDER":
             symlink_target = self.symlink_targets.get(row)
-            new_path = ""
             if symlink_target:
-                if symlink_target.startswith('/'):
-                    new_path = symlink_target
-                else:
-                    new_path = os.path.normpath(os.path.join(self.current_path, symlink_target)).replace("\\", "/")
+                new_path = symlink_target if symlink_target.startswith('/') else \
+                    self._dpath(os.path.normpath(os.path.join(self.current_path, symlink_target)))
             else:
-                new_path = os.path.join(self.current_path, selected_name).replace("\\", "/")
+                new_path = self._dpath(self.current_path, selected_name)
 
             new_path = new_path.replace("//", "/")
             if selected_name == "sdcard":
                 new_path = "/storage/emulated/0"
 
-            if new_path != self.current_path:
-                self.history_stack.append(self.current_path)
-                self.forward_stack.clear()
-                self.back_button.setEnabled(True)
-                self.forward_button.setEnabled(False)
-                self.current_path = new_path
-                self.path_field.setText(self.current_path)
-
-            self.refresh_file_list()
+            self._navigate_to(new_path)
         else:
             self.view_or_pull_file(selected_name)
 
@@ -567,13 +585,13 @@ class ADBFileExplorer(QMainWindow):
     # Viewing files & images
     # -----------------------------
     def view_file_contents(self, filename, is_image=False):
-        full_path = os.path.join(self.current_path, filename).replace("\\", "/")
+        full_path = self._dpath(self.current_path, filename)
         if is_image:
             temp_dir = os.path.join(tempfile.gettempdir(), "adbexplorer")
             os.makedirs(temp_dir, exist_ok=True)
             temp_path = os.path.join(temp_dir, filename)
             self.statusBar.showMessage(f"Pulling image {filename} for viewing...")
-            if getattr(self, 'root_access_checkbox', None) and self.root_access_checkbox.isChecked():
+            if self.is_root:
                 device_temp = f"/data/local/tmp/{filename}"
                 dd_cmd = f'su -c "dd if=\\"{full_path}\\" of=\\"{device_temp}\\" && chmod 644 \\"{device_temp}\\""'
                 dd_thread = ADBThread(self.adb_path, ['shell'], [dd_cmd])
@@ -587,12 +605,8 @@ class ADBFileExplorer(QMainWindow):
                 self._start_thread(pull)
         else:
             self.statusBar.showMessage(f"Loading contents of {filename}...")
-            if getattr(self, 'root_access_checkbox', None) and self.root_access_checkbox.isChecked():
-                cmd = ['shell', f'su -c "cat \\"{full_path}\\""']
-                t = ADBThread(self.adb_path, cmd, [])
-            else:
-                cmd = ['shell', f'cat "{full_path}"']
-                t = ADBThread(self.adb_path, cmd, [])
+            shell_cmd = f'su -c "cat \\"{full_path}\\""' if self.is_root else f'cat "{full_path}"'
+            t = ADBThread(self.adb_path, ['shell', shell_cmd], [])
             t.command_finished.connect(lambda out, err: self.display_file_contents(filename, out, err))
             self._start_thread(t)
 
@@ -697,7 +711,7 @@ class ADBFileExplorer(QMainWindow):
             QMessageBox.critical(self, "Error", f"Could not save file: {str(e)}")
 
     def save_to_device(self, filename, content):
-        full_path = os.path.join(self.current_path, filename).replace("\\", "/")
+        full_path = self._dpath(self.current_path, filename)
         reply = QMessageBox.question(
             self, "Save to Device",
             f"Are you sure you want to save changes to {full_path} on the device?",
@@ -708,12 +722,8 @@ class ADBFileExplorer(QMainWindow):
 
         content_b64 = base64.b64encode(content.encode('utf-8')).decode('ascii')
         self.statusBar.showMessage(f"Saving {filename} to device...")
-
-        if getattr(self, 'root_access_checkbox', None) and self.root_access_checkbox.isChecked():
-            save_cmd = f'su -c "echo \'{content_b64}\' | base64 -d > \\"{full_path}\\""'
-        else:
-            save_cmd = f'echo \'{content_b64}\' | base64 -d > "{full_path}"'
-
+        save_cmd = self._root_cmd(f'echo \'{content_b64}\' | base64 -d > \\"{full_path}\\"') \
+            if self.is_root else f'echo \'{content_b64}\' | base64 -d > "{full_path}"'
         t = ADBThread(self.adb_path, ['shell'], [save_cmd])
         t.command_finished.connect(lambda out, err: self.save_complete(out, err, filename))
         self._start_thread(t)
@@ -730,14 +740,14 @@ class ADBFileExplorer(QMainWindow):
     # Pull / Push (now threaded)
     # -----------------------------
     def pull_file(self, filename, save_path=None):
-        full_path = os.path.join(self.current_path, filename).replace("\\", "/")
+        full_path = self._dpath(self.current_path, filename)
         if save_path is None:
             save_path, _ = QFileDialog.getSaveFileName(self, "Save File As", filename, "All Files (*)")
             if not save_path:
                 return
         self.statusBar.showMessage(f"Pulling file {filename}...")
 
-        if getattr(self, 'root_access_checkbox', None) and self.root_access_checkbox.isChecked():
+        if self.is_root:
             device_temp = f"/data/local/tmp/{filename}"
             dd_cmd = f'su -c "dd if=\\"{full_path}\\" of=\\"{device_temp}\\" && chmod 644 \\"{device_temp}\\""'
             t = ADBThread(self.adb_path, ['shell'], [dd_cmd])
@@ -778,10 +788,7 @@ class ADBFileExplorer(QMainWindow):
 
     def start_pull(self, source_path, dest_dir, name, is_directory):
         dest_path = os.path.join(dest_dir, name)
-        progress = QProgressDialog(f"Pulling {name}...", "Cancel", 0, 0, self)
-        progress.setWindowTitle("File Transfer")
-        progress.setModal(True)
-        progress.show()
+        progress = self._make_progress(f"Pulling {name}...")
         android_path = source_path.replace('\\', '/')
         if is_directory:
             self.chmod_and_pull(android_path, dest_path, name, progress)
@@ -842,7 +849,7 @@ class ADBFileExplorer(QMainWindow):
         if not dest_dir:
             return
         for name, is_directory in items_to_pull:
-            source_path = os.path.join(self.current_path, name)
+            source_path = self._dpath(self.current_path, name)
             self.start_pull(source_path, dest_dir, name, is_directory)
 
     def push_file(self):
@@ -850,11 +857,8 @@ class ADBFileExplorer(QMainWindow):
         if not files:
             return
         for file_path in files:
-            dest_path = os.path.join(self.current_path, os.path.basename(file_path)).replace("\\", "/")
-            progress = QProgressDialog(f"Pushing {os.path.basename(file_path)}...", "Cancel", 0, 0, self)
-            progress.setWindowTitle("File Transfer")
-            progress.setModal(True)
-            progress.show()
+            dest_path = self._dpath(self.current_path, os.path.basename(file_path))
+            progress = self._make_progress(f"Pushing {os.path.basename(file_path)}...")
             transfer = TransferRunner(self.adb_path, ['push', file_path, dest_path])
             transfer.transfer_finished.connect(lambda out, err, dest, p=progress: self.handle_push_result(out, err, file_path, p))
             transfer.transfer_progress.connect(self.handle_transfer_progress)
@@ -882,7 +886,7 @@ class ADBFileExplorer(QMainWindow):
         for row in selected_rows:
             name_item = self.table.item(row, 0)
             if name_item and name_item.text() != "..":
-                self.selected_items.append(os.path.join(self.current_path, name_item.text()).replace("\\", "/"))
+                self.selected_items.append(self._dpath(self.current_path, name_item.text()))
         self.copy_mode = copy_mode
         self.statusBar.showMessage(f"{'Copied' if copy_mode else 'Cut'} {len(self.selected_items)} item(s)")
 
@@ -891,7 +895,7 @@ class ADBFileExplorer(QMainWindow):
             return
         for source_path in self.selected_items:
             filename = os.path.basename(source_path)
-            dest_path = os.path.join(self.current_path, filename).replace("\\", "/")
+            dest_path = self._dpath(self.current_path, filename)
             if source_path == dest_path:
                 continue
             if self.copy_mode:
@@ -927,10 +931,13 @@ class ADBFileExplorer(QMainWindow):
         if '/' in folder_name or '\\' in folder_name:
             QMessageBox.critical(self, "Error", "Folder name cannot contain / or \\")
             return
-        full_path = os.path.join(self.current_path, folder_name).replace("\\", "/")
-        mkdir_thread = ADBThread(self.adb_path, ['shell'], [f'mkdir -p "{full_path}"'])
+        full_path = self._dpath(self.current_path, folder_name)
+        mkdir_cmd = self._root_cmd(f'mkdir -p \\"{full_path}\\"') if self.is_root else f'mkdir -p "{full_path}"'
+        mkdir_thread = ADBThread(self.adb_path, ['shell'], [mkdir_cmd])
         mkdir_thread.command_finished.connect(lambda out, err: self.handle_mkdir_result(out, err, folder_name))
         self._start_thread(mkdir_thread)
+
+
 
     def handle_mkdir_result(self, output, error, folder_name):
         if error:
@@ -939,39 +946,84 @@ class ADBFileExplorer(QMainWindow):
             self.statusBar.showMessage(f"Created folder {folder_name}")
             self.refresh_file_list()
 
+    def create_new_file(self):
+        file_name, ok = QInputDialog.getText(self, "New File", "Enter file name:")
+        if not ok or not file_name:
+            return
+        if '/' in file_name or '\\' in file_name:
+            QMessageBox.critical(self, "Error", "File name cannot contain / or \\")
+            return
+        full_path = self._dpath(self.current_path, file_name)
+        touch_cmd = self._root_cmd(f'touch \\"{full_path}\\"') if self.is_root else f'touch "{full_path}"'
+        touch_thread = ADBThread(self.adb_path, ['shell'], [touch_cmd])
+        touch_thread.command_finished.connect(lambda out, err: self.handle_touch_result(out, err, file_name))
+        self._start_thread(touch_thread)
+    
+    def handle_touch_result(self, output, error, file_name):
+        if error:
+            QMessageBox.critical(self, "Error", f"Failed to create file {file_name}: {output}")
+        else:
+            self.statusBar.showMessage(f"Created file {file_name}")
+            self.refresh_file_list()   
+
     def execute_shell_script(self, name):
         if not name.endswith('.sh'):
             return
         full_path = f"{self.current_path.rstrip('/')}/{name}"
-        if getattr(self, 'root_access_checkbox', None) and self.root_access_checkbox.isChecked():
+        if self.is_root:
             chmod_cmd = f'su -c "chmod +x \\"{full_path}\\""'
             chmod_thread = ADBThread(self.adb_path, ['shell'], [chmod_cmd])
-            chmod_thread.command_finished.connect(lambda out, err: self.run_script_after_chmod(out, err, full_path, name))
+            chmod_thread.command_finished.connect(
+                lambda out, err: self._run_script(['shell', 'su', '-c', 'sh', full_path], name) if not err else None
+            )
             self._start_thread(chmod_thread)
         else:
-            self.run_script_directly(full_path, name)
+            self._run_script(['shell', 'sh', full_path], name)
 
-    def run_script_after_chmod(self, output, error, full_path, name):
-        if error:
-            return
-        execute_thread = ADBThread(self.adb_path, ['shell', 'su', '-c', 'sh', full_path], [])
-        execute_thread.command_finished.connect(lambda out, err: self.handle_execute_result(out, err, name))
-        self.refresh_file_list()
-        self._start_thread(execute_thread)
+    def _run_script(self, cmd_args: list, name: str):
+        """Open a live output dialog and stream script execution into it."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Executing: {name}")
+        dialog.setMinimumSize(700, 450)
+        dialog.setModal(False)
 
-    def run_script_directly(self, full_path, name):
-        execute_thread = ADBThread(self.adb_path, ['shell', 'sh', full_path], [])
-        execute_thread.command_finished.connect(lambda out, err: self.handle_execute_result(out, err, name))
-        self.refresh_file_list()
-        self._start_thread(execute_thread)
+        layout = QVBoxLayout(dialog)
 
-    def handle_execute_result(self, output, error, name):
-        if error:
-            print(f"Error executing {name}: {output}")
-        else:
-            print(f"Successfully executed {name}")
-            if output and output.strip():
-                print(f"Output: {output}")
+        header = QLabel(f"Output of <b>{name}</b>")
+        header.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(header)
+
+        output_view = QPlainTextEdit()
+        output_view.setReadOnly(True)
+        output_view.setFont(QFont("Courier New", 9))
+        layout.addWidget(output_view)
+
+        close_btn = QPushButton("Close")
+        close_btn.setEnabled(False)
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+        dialog.show()
+
+        runner = TransferRunner(self.adb_path, cmd_args)
+
+        def _on_line(line: str):
+            output_view.appendPlainText(line)
+            output_view.ensureCursorVisible()
+
+        def _on_done(last_line: str, is_error: bool, _dest: str):
+            if is_error:
+                output_view.appendPlainText(f"\n[✗] Script exited with an error.")
+                self.statusBar.showMessage(f"Script {name} finished with errors.")
+            else:
+                output_view.appendPlainText(f"\n[✓] Done.")
+                self.statusBar.showMessage(f"Script {name} executed successfully.")
+            close_btn.setEnabled(True)
+            self.refresh_file_list()
+
+        runner.transfer_progress.connect(_on_line)
+        runner.transfer_finished.connect(_on_done)
+        self._start_thread(runner)
 
     # -----------------------------
     # Context menu and selections
@@ -1021,12 +1073,11 @@ class ADBFileExplorer(QMainWindow):
         new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=name)
         if not ok or not new_name or new_name == name:
             return
-        old_path = os.path.join(self.current_path, name).replace("\\", "/")
-        new_path = os.path.join(self.current_path, new_name).replace("\\", "/")
-        if getattr(self, 'root_access_checkbox', None) and self.root_access_checkbox.isChecked():
-            rename_thread = ADBThread(self.adb_path, ['shell'], [f'su -c "mv \\"{old_path}\\" \\"{new_path}\\""'])
-        else:
-            rename_thread = ADBThread(self.adb_path, ['shell'], [f'mv "{old_path}" "{new_path}"'])
+        old_path = self._dpath(self.current_path, name)
+        new_path = self._dpath(self.current_path, new_name)
+        mv_cmd = self._root_cmd(f'mv \\"{old_path}\\" \\"{new_path}\\"') \
+            if self.is_root else f'mv "{old_path}" "{new_path}"'
+        rename_thread = ADBThread(self.adb_path, ['shell'], [mv_cmd])
         rename_thread.command_finished.connect(lambda out, err: self.handle_rename_result(out, err, name, new_name))
         self._start_thread(rename_thread)
 
@@ -1042,21 +1093,18 @@ class ADBFileExplorer(QMainWindow):
                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if confirm != QMessageBox.StandardButton.Yes:
             return
-        path = os.path.join(self.current_path, name).replace("\\", "/")
-        if getattr(self, 'root_access_checkbox', None) and self.root_access_checkbox.isChecked():
-            is_dir_thread = ADBThread(self.adb_path, ['shell'], [f'su -c "[ -d \\"{path}\\" ] && echo \\"dir\\" || echo \\"file\\""'])
-        else:
-            is_dir_thread = ADBThread(self.adb_path, ['shell'], [f'[ -d "{path}" ] && echo "dir" || echo "file"'])
+        path = self._dpath(self.current_path, name)
+        check_cmd = self._root_cmd(f'[ -d \\"{path}\\" ] && echo \\"dir\\" || echo \\"file\\"') \
+            if self.is_root else f'[ -d "{path}" ] && echo "dir" || echo "file"'
+        is_dir_thread = ADBThread(self.adb_path, ['shell'], [check_cmd])
         is_dir_thread.command_finished.connect(lambda out, err: self.perform_delete(path, name, "dir" in out.strip()))
         self._start_thread(is_dir_thread)
 
     def perform_delete(self, path, name, is_directory):
         delete_command = f'rm -rf "{path}"' if is_directory else f'rm "{path}"'
-        if getattr(self, 'root_access_checkbox', None) and self.root_access_checkbox.isChecked():
-            delete_cmd = f'su -c "{delete_command}"'
-            delete_thread = ADBThread(self.adb_path, ['shell'], [delete_cmd])
-        else:
-            delete_thread = ADBThread(self.adb_path, ['shell'], [delete_command])
+        delete_cmd = self._root_cmd(delete_command.replace('"', '\\"')) \
+            if self.is_root else delete_command
+        delete_thread = ADBThread(self.adb_path, ['shell'], [delete_cmd])
         delete_thread.command_finished.connect(lambda out, err: self.handle_delete_result(out, err, name))
         self._start_thread(delete_thread)
 
@@ -1105,7 +1153,7 @@ class ADBFileExplorer(QMainWindow):
         self.sort_combo.setCurrentIndex(column)
 
     def show_properties(self, name, is_folder):
-        full_path = os.path.join(self.current_path, name).replace("\\", "/")
+        full_path = self._dpath(self.current_path, name)
         if is_folder:
             size_thread = ADBThread(self.adb_path, ['shell'], [f'du -sh "{full_path}"'])
             size_thread.command_finished.connect(lambda out, err: self.show_folder_properties(name, full_path, out, err))
@@ -1182,7 +1230,7 @@ class ADBFileExplorer(QMainWindow):
         live chmod preview, Apply and Revert buttons.
         Robust against early signals and works with PyQt6 enums.
         """
-        full_path = os.path.join(self.current_path, name).replace("\\", "/")
+        full_path = self._dpath(self.current_path, name)
     
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Permissions - {name}")
@@ -1276,7 +1324,7 @@ class ADBFileExplorer(QMainWindow):
             out = (output or "").strip()
             mode_candidate = None
             if out:
-                import re
+
                 # try to find 3 or 4 digit octal in output
                 m = re.search(r'\b([0-7]{3,4})\b', out)
                 if m:
@@ -1316,19 +1364,17 @@ class ADBFileExplorer(QMainWindow):
                 # fallback thread for ls -ld
                 ls_thread = ADBThread(self.adb_path, ['shell'], [ls_cmd])
                 ls_thread.command_finished.connect(handle_stat_result)
-                self.threads.append(ls_thread)
-                ls_thread.start()
+                self._start_thread(ls_thread)
     
         stat_thread.command_finished.connect(stat_cb)
-        self.threads.append(stat_thread)
-        stat_thread.start()
+        self._start_thread(stat_thread)
     
         # Revert handler
         def on_revert():
             if dialog._original_mode:
                 set_checkboxes_from_mode(dialog._original_mode)
                 update_preview()
-    
+
         # Apply handler (use su -c when root checkbox is selected)
         def on_apply():
             mode = dialog._current_mode or perms_to_mode()
@@ -1357,12 +1403,11 @@ class ADBFileExplorer(QMainWindow):
                     return
         
             # Build chmod command. Use su -c when root checkbox is selected.
-            if hasattr(self, "root_access_checkbox") and self.root_access_checkbox.isChecked():
+            if self.is_root:
                 chmod_cmd = f"su -c 'chmod {mode} \"{full_path}\"'"
-                apply_thread = ADBThread(self.adb_path, ["shell"], [chmod_cmd])
             else:
                 chmod_cmd = f'chmod {mode} "{full_path}"'
-                apply_thread = ADBThread(self.adb_path, ["shell"], [chmod_cmd])
+            apply_thread = ADBThread(self.adb_path, ["shell"], [chmod_cmd])
         
             # After chmod completes, run stat -c %a to confirm permission bits
             def _on_chmod_finished(output, err):
@@ -1371,83 +1416,6 @@ class ADBFileExplorer(QMainWindow):
         
                 def _on_stat_finished(stat_out, stat_err):
                     stat_text = (stat_out or "").strip()
-                    import re
-                    m = re.search(r'([0-7]{3,4})', stat_text)
-                    current_mode = m.group(1) if m else None
-        
-                    expected = mode.lstrip("0")
-                    current = current_mode.lstrip("0") if current_mode else None
-        
-                    if current and current == expected:
-                        self.statusBar.showMessage(f"Permissions set to {current} for {name}")
-                        dialog.accept()
-                        self.refresh_file_list()
-                    else:
-                        if emulated_path:
-                            QMessageBox.warning(
-                                dialog,
-                                "Permissions Unchanged",
-                                "chmod completed but permissions did not change (sdcardfs/FUSE likely ignores chmod on this path).\n\n"
-                                "Move the file to a writable native partition (e.g. /data/local/tmp) to change UNIX permissions."
-                            )
-                        else:
-                            QMessageBox.critical(
-                                dialog,
-                                "Failed to Apply Permissions",
-                                f"Permissions did not change as expected. Current: {current_mode or '<unknown>'}\n\nRaw output:\n{stat_text}"
-                            )
-                        self.refresh_file_list()
-        
-                stat_thread.command_finished.connect(_on_stat_finished)
-                self.threads.append(stat_thread)
-                stat_thread.start()
-        
-            apply_thread.command_finished.connect(_on_chmod_finished)
-            self.threads.append(apply_thread)           
-            apply_thread.start()
-
-        def on_apply():
-            mode = dialog._current_mode or perms_to_mode()
-            if not mode:
-                QMessageBox.critical(dialog, "Error", "Invalid permission selection.")
-                return
-        
-            # Detect emulated/external storage where chmod is often ignored
-            emulated_path = (
-                "/storage/emulated/" in full_path
-                or full_path.startswith("/sdcard")
-                or ("/storage/" in full_path and "/emulated/" in full_path)
-            )
-        
-            # If emulated, warn the user and require explicit confirmation to proceed
-            if emulated_path:
-                proceed = QMessageBox.warning(
-                    dialog,
-                    "Emulated storage - chmod may be ignored",
-                    "Target appears to be on emulated/external storage. "
-                    "On many Android devices, sdcardfs/FUSE prevents chmod from changing permissions.\n\n"
-                    "Proceed anyway?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                )
-                if proceed != QMessageBox.StandardButton.Yes:
-                    return
-        
-            # Build chmod command. Use su -c when root checkbox is selected.
-            if hasattr(self, "root_access_checkbox") and self.root_access_checkbox.isChecked():
-                chmod_cmd = f"su -c 'chmod {mode} \"{full_path}\"'"
-                apply_thread = ADBThread(self.adb_path, ["shell"], [chmod_cmd])
-            else:
-                chmod_cmd = f'chmod {mode} "{full_path}"'
-                apply_thread = ADBThread(self.adb_path, ["shell"], [chmod_cmd])
-        
-            # After chmod completes, run stat -c %a to confirm permission bits
-            def _on_chmod_finished(output, err):
-                stat_cmd = f'stat -c %a "{full_path}"'
-                stat_thread = ADBThread(self.adb_path, ["shell"], [stat_cmd])
-        
-                def _on_stat_finished(stat_out, stat_err):
-                    stat_text = (stat_out or "").strip()
-                    import re
                     m = re.search(r'([0-7]{3,4})', stat_text)
                     current_mode = m.group(1) if m else None
         
@@ -1475,12 +1443,10 @@ class ADBFileExplorer(QMainWindow):
                         self.refresh_file_list()
         
                 stat_thread.command_finished.connect(_on_stat_finished)
-                self.threads.append(stat_thread)
-                stat_thread.start()
+                self._start_thread(stat_thread)
         
             apply_thread.command_finished.connect(_on_chmod_finished)
-            self.threads.append(apply_thread)
-            apply_thread.start()
+            self._start_thread(apply_thread)
         
     
         apply_btn.clicked.connect(on_apply)
@@ -1491,9 +1457,6 @@ class ADBFileExplorer(QMainWindow):
         dialog.resize(460, 280)
         dialog.exec()
 
-
-        # cleanup temporary storage
-        self._chmod_checkboxes = {}
 
 def main():
     app = QApplication(sys.argv)

@@ -1,5 +1,5 @@
 '''
-View all device partitions by using "ls /dev/block/by-name". All listed partitions can be pulled from the device
+partitionmanager.py - View all device partitions by using "ls /dev/block/by-name". All listed partitions can be pulled from the device
 as .img files for flashing. You can also write .img files to partition blocks, though it's not the best method to flash.
 None of this can work without superuser rights for obvious reasons.
 
@@ -9,9 +9,15 @@ None of this can work without superuser rights for obvious reasons.
 from util.thememanager import ThemeManager
 import sys
 import os
+
+from util.resource import get_root_dir, resource_path, resolve_platform_tool
+root_dir = get_root_dir()
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 import subprocess
 import re
 import datetime
+import time
 import tempfile
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer
 from PyQt6.QtWidgets import (
@@ -49,84 +55,97 @@ class PartitionLoadWorker(QThread):
         super().__init__()
         self.platform_tools_path = platform_tools_path
         
-    def get_partition_size(self, partition_name):
-        """Get the size of a partition in bytes."""
-        try:
-            command = [
-                os.path.join(self.platform_tools_path, 'adb'), 
-                'shell', 'su', '-c', 
-                f'blockdev --getsize64 /dev/block/by-name/{partition_name}'
-            ]
-            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            
-            if result.returncode == 0:
-                size = result.stdout.strip()
-                return int(size) if size.isdigit() else 0
-            else:
-                return 0
-        except Exception:
-            return 0
-    
     def run(self):
         """Load partitions from the device."""
         try:
-            self.log_message.emit("Loading partitions from device...")
+            self.log_message.emit("Loading and analyzing partitions from device...")
+            adb_exe = resolve_platform_tool(self.platform_tools_path, 'adb')
             
-            command = [os.path.join(self.platform_tools_path, 'adb'), 'shell',
-                        'ls -l /dev/block/by-name']
-            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            # Use cat /proc/partitions for accurate sizes and ls -lL for name mapping.
+            remote_script = "cat /proc/partitions; echo '---SEP---'; ls -lL /dev/block/by-name"
+            
+            command = [
+                adb_exe, 'shell', 'su', '-c', remote_script
+            ]
+            creationflags = 0
+            if sys.platform == "win32":
+                creationflags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP |
+                    subprocess.CREATE_NO_WINDOW
+                )
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=creationflags,
+                text=True
+            )
             
             if result.returncode != 0:
-                self.error_occurred.emit(f"Failed to load partitions:\n{result.stderr.strip()}")
+                self.error_occurred.emit(f"Failed to load partitions (RC {result.returncode}):\n{result.stderr.strip()}")
                 return
             
-            lines = result.stdout.splitlines()
-            
-            if not lines or len(lines) <= 1:  # No partitions found or only the "total" line
-                self.error_occurred.emit("No partitions found or device not accessible.")
+            output = result.stdout.strip()
+            if '---SEP---' not in output:
+                self.error_occurred.emit("Device returned unexpected output format. Ensure 'su' is granted.")
                 return
+
+            proc_part_text, ls_text = output.split('---SEP---', 1)
             
-            lines = lines[1:]  # Skip the "total 0" line
-            partitions_data = []  # Store partitions data
+            # 1. Parse /proc/partitions mapping (major, minor) -> size_bytes
+            size_map = {}
+            for line in proc_part_text.strip().splitlines():
+                # Format: major minor  #blocks  name
+                # Sample:   259    22    1048576  mmcblk0p22
+                match = re.search(r'^\s*(\d+)\s+(\d+)\s+(\d+)\s+', line)
+                if match:
+                    major, minor, blocks = match.groups()
+                    size_map[(int(major), int(minor))] = int(blocks) * 1024
+
+            # 2. Parse ls -lL output for name mapping
+            partitions_data = []
+            ls_lines = ls_text.strip().splitlines()
+            total_lines = len(ls_lines)
             
-            total_partitions = len(lines)
-            for current, line in enumerate(lines):
-                parts = line.split()
-                if len(parts) >= 9:  # Ensure we have enough parts
-                    try:
-                        # Extract permissions, partition name and path
-                        permissions = parts[0]  # e.g., "lrwxrwxrwx"
-                        partition_name = parts[-3]  # Name before the "->"
-                        partition_path = parts[-1]  # Path after the "->"
-                        
-                        # Skip lines that don't match the expected format
-                        if "lrwxrwxrwx" not in permissions or "->" not in line:
-                            continue
-                        
-                        # Report progress before potentially long operation
-                        self.progress_update.emit(current + 1, total_partitions)
-                        self.log_message.emit(f"Getting size for partition: {partition_name}")
-                        
-                        # Get partition size (this may take some time)
-                        size_bytes = self.get_partition_size(partition_name)
-                        size_human = FormatSize.human_readable_size(size_bytes)
-                        
-                        partition_info = {
-                            'name': partition_name,
-                            'path': partition_path,
-                            'permissions': permissions,
-                            'size_bytes': size_bytes,
-                            'size_human': size_human
-                        }
-                        
-                        partitions_data.append(partition_info)
-                        
-                    except Exception as e:
-                        self.log_message.emit(f"Error processing partition: {str(e)}")
-            
+            for current, line in enumerate(ls_lines):
+                line = line.strip()
+                if not line or line.startswith('total'):
+                    continue
+
+                # Format: brw------- 1 root root  259,  22 2026-03-04 18:00 system
+                # Regex looks for common block device pattern: major, minor, ..., name
+                # Flexible on space after comma.
+                match = re.search(r'([0-9]+),\s*([0-9]+)\s+.*?\s+([^/\s]+)$', line)
+                if match:
+                    major, minor, name = match.groups()
+                    m_tuple = (int(major), int(minor))
+                    
+                    size_bytes = size_map.get(m_tuple, 0)
+                    size_human = FormatSize.human_readable_size(size_bytes)
+                    
+                    # Periodic UI updates
+                    if current % 10 == 0:
+                        self.progress_update.emit(current + 1, total_lines)
+                        self.log_message.emit(f"Mapping: {name} -> {m_tuple}")
+                    
+                    partitions_data.append({
+                        'name': name,
+                        'path': f"/dev/block/by-name/{name}",
+                        'permissions': line.split()[0], 
+                        'size_bytes': size_bytes,
+                        'size_human': size_human
+                    })
+                else:
+                    if line:
+                        self.log_message.emit(f"Skipping line (no match): {line}")
+
+            if not partitions_data:
+                self.error_occurred.emit("No partitions found in /dev/block/by-name. System might be restricted.")
+                return
+
             # Emit the loaded partitions
             self.partitions_loaded.emit(partitions_data)
-            self.log_message.emit(f"Loaded {len(partitions_data)} partitions from device")
+            self.log_message.emit(f"Loaded {len(partitions_data)} partitions successfully.")
             self.finished_loading.emit()
         
         except Exception as e:
@@ -146,68 +165,113 @@ class PartitionPullWorker(QThread):
     def run(self):
         try:
             total_partitions = len(self.selected_partitions)
-            current_partition = 1
             successful_pulls = 0
-            failed_pulls = 0
+            adb_exe = resolve_platform_tool(self.platform_tools_path, 'adb')
             
-            for partition_info in self.selected_partitions:
+            for i, partition_info in enumerate(self.selected_partitions):
                 partition_name = partition_info['name']
-                partition_success = True
+                total_bytes = partition_info.get('size_bytes', 0)
+                current_num = i + 1
                 
-                # Step 1: Copy the partition to /sdcard
-                self.progress.emit(f"Processing {current_partition}/{total_partitions}: Copying {partition_name} to device...")
-                self.log_message.emit(f"Copying {partition_name} to device...")
+                # Step 1: Copy the partition to /sdcard with bs=4M
+                self.progress.emit(f"({current_num}/{total_partitions}) Copying {partition_name}...")
+                self.log_message.emit(f"Copying {partition_name} to device sdcard...")
+                
+                target_path = f"/sdcard/{partition_name}.img"
                 dd_command = [
-                    os.path.join(self.platform_tools_path, 'adb'),
+                    adb_exe,
                     'shell', 'su', '-c',
-                    f'dd if=/dev/block/by-name/{partition_name} of=/sdcard/{partition_name}.img'
+                    f'dd if=/dev/block/by-name/{partition_name} of={target_path} bs=4M'
                 ]
-                result = subprocess.run(dd_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                if result.returncode != 0:
-                    self.log_message.emit(f"Failed to copy {partition_name} to device: {result.stderr.strip()}")
-                    self.progress.emit(f"Failed to copy {partition_name} to device")
-                    current_partition += 1
-                    failed_pulls += 1
-                    partition_success = False
+                
+                # Windows specific: Create a new process group and hide the console window.
+                creationflags = 0
+                if sys.platform == "win32":
+                    creationflags = (
+                        subprocess.CREATE_NEW_PROCESS_GROUP |
+                        subprocess.CREATE_NO_WINDOW
+                    )
+
+                # Start dd process
+                process = subprocess.Popen(
+                    dd_command, 
+                    stdout=subprocess.PIPE, 
+                    stderr=subprocess.PIPE, 
+                    text=True,
+                    creationflags=creationflags
+                )
+                
+                # Polling loop for progress monitoring
+                last_size = 0
+                start_time = time.time()
+                while process.poll() is None:
+                    # Run ls -l to get the current file size
+                    ls_command = [
+                        adb_exe,
+                        'shell', 'su', '-c', f'ls -l {target_path}'
+                    ]
+                    ls_result = subprocess.run(ls_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)
+                    
+                    if ls_result.returncode == 0:
+                        # Parse ls -l output: -rw-rw---- 1 root sdcard_rw 67108864 2026-03-04 19:58 boot.img
+                        parts = ls_result.stdout.strip().split()
+                        if len(parts) >= 5:
+                            try:
+                                # Standard ls -l format usually has size at index 3 or 4
+                                # On many Androids it's: permissions links user group size date time name
+                                # In the example from my local test device: -rw-rw---- 1 u0_a155 media_rw 67108864 2026-02-28 20:38 boot.img
+                                # The size is '67108864' at index 4
+                                current_size = int(parts[4])
+                                
+                                # Calculate progress
+                                progress_pct = (current_size / total_bytes * 100) if total_bytes > 0 else 0
+                                
+                                # Calculate speed
+                                elapsed = time.time() - start_time
+                                speed_mb = (current_size / (1024 * 1024)) / elapsed if elapsed > 0 else 0
+                                
+                                size_mb = current_size / (1024 * 1024)
+                                self.progress.emit(f"({current_num}/{total_partitions}) {partition_name}: {size_mb:.1f}MB ({progress_pct:.1f}%) @ {speed_mb:.1f} MB/s")
+                                last_size = current_size
+                            except (ValueError, IndexError):
+                                pass
+                    
+                    time.sleep(1) # Poll every second
+                
+                if process.returncode != 0:
+                    err = process.stderr.read()
+                    self.log_message.emit(f"Failed to copy {partition_name}: {err.strip()}")
                     continue
                 
                 # Step 2: Pull the image from the device
-                self.progress.emit(f"Processing {current_partition}/{total_partitions}: Pulling {partition_name} from device...")
-                self.log_message.emit(f"Pulling {partition_name} from device...")
+                self.progress.emit(f"({current_num}/{total_partitions}) Pulling {partition_name} to PC...")
+                self.log_message.emit(f"Pulling {partition_name} from device (may take a while)...")
+                
                 pull_command = [
-                    os.path.join(self.platform_tools_path, 'adb'),
-                    'pull', f'/sdcard/{partition_name}.img', self.save_dir
+                    adb_exe,
+                    'pull', target_path, self.save_dir
                 ]
-                result = subprocess.run(pull_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                result = subprocess.run(pull_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)
+                
                 if result.returncode != 0:
                     self.log_message.emit(f"Failed to pull {partition_name}: {result.stderr.strip()}")
-                    self.progress.emit(f"Failed to pull {partition_name}")
-                    current_partition += 1
-                    failed_pulls += 1
-                    partition_success = False
+                    # Cleanup attempt
+                    subprocess.run([adb_exe, 'shell', 'su', '-c', f'rm {target_path}'], creationflags=creationflags)
                     continue
                 
                 # Step 3: Remove the image from the device
-                self.progress.emit(f"Processing {current_partition}/{total_partitions}: Cleaning up {partition_name} from device...")
                 self.log_message.emit(f"Cleaning up {partition_name} from device...")
                 rm_command = [
-                    os.path.join(self.platform_tools_path, 'adb'),
-                    'shell', 'su', '-c', f'rm /sdcard/{partition_name}.img'
+                    adb_exe,
+                    'shell', 'su', '-c', f'rm {target_path}'
                 ]
-                result = subprocess.run(rm_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                if result.returncode != 0:
-                    self.log_message.emit(f"Failed to remove {partition_name}.img from device: {result.stderr.strip()}")
-                    self.progress.emit(f"Failed to clean up {partition_name}")
-                    # Not counting cleanup failures as a complete failure
+                subprocess.run(rm_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)
                 
-                if partition_success:
-                    successful_pulls += 1
-                    self.progress.emit(f"Processed {current_partition}/{total_partitions}: Pulled {partition_name} successfully")
-                    self.log_message.emit(f"Pulled {partition_name} successfully")
-                
-                current_partition += 1
+                successful_pulls += 1
+                self.log_message.emit(f"Pulled {partition_name} successfully")
+                self.progress.emit(f"({current_num}/{total_partitions}) Done: {partition_name}")
             
-            # Emit final status - success flag is True if at least one partition was successfully pulled
+            # Emit final status
             self.finished_with_status.emit(successful_pulls > 0, successful_pulls, total_partitions)
             
         except Exception as e:
@@ -230,15 +294,24 @@ class PartitionFlashWorker(QThread):
         try:
             partition_name = self.partition_info['name']
             partition_success = True
+            adb_exe = resolve_platform_tool(self.platform_tools_path, 'adb')
             
             # Step 1: Push the image file to /sdcard
             self.progress.emit(f"Pushing image file to device...")
             self.log_message.emit(f"Pushing image for {partition_name} to device...")
             push_command = [
-                os.path.join(self.platform_tools_path, 'adb'),
+                adb_exe,
                 'push', self.image_path, f'/sdcard/{partition_name}.img'
             ]
-            result = subprocess.run(push_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            # Windows specific: Create a new process group and hide the console window.
+            creationflags = 0
+            if sys.platform == "win32":
+                creationflags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP |
+                    subprocess.CREATE_NO_WINDOW
+                )
+
+            result = subprocess.run(push_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)
             if result.returncode != 0:
                 self.log_message.emit(f"Failed to push image to device: {result.stderr.strip()}")
                 self.progress.emit(f"Failed to push image to device")
@@ -249,11 +322,11 @@ class PartitionFlashWorker(QThread):
             self.progress.emit(f"Flashing {partition_name}...")
             self.log_message.emit(f"Flashing {partition_name}...")
             dd_command = [
-                os.path.join(self.platform_tools_path, 'adb'),
+                adb_exe,
                 'shell', 'su', '-c',
-                f'dd if=/sdcard/{partition_name}.img of=/dev/block/by-name/{partition_name}'
+                f'dd if=/sdcard/{partition_name}.img of=/dev/block/by-name/{partition_name} bs=4M'
             ]
-            result = subprocess.run(dd_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            result = subprocess.run(dd_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)
             if result.returncode != 0:
                 self.log_message.emit(f"Failed to flash {partition_name}: {result.stderr.strip()}")
                 self.progress.emit(f"Failed to flash {partition_name}")
@@ -266,10 +339,10 @@ class PartitionFlashWorker(QThread):
             self.progress.emit(f"Cleaning up...")
             self.log_message.emit(f"Cleaning up temporary files...")
             rm_command = [
-                os.path.join(self.platform_tools_path, 'adb'),
+                adb_exe,
                 'shell', 'su', '-c', f'rm /sdcard/{partition_name}.img'
             ]
-            result = subprocess.run(rm_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            result = subprocess.run(rm_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)
             if result.returncode != 0:
                 self.log_message.emit(f"Failed to remove temporary file: {result.stderr.strip()}")
                 self.progress.emit(f"Failed to clean up temporary file")
@@ -292,7 +365,7 @@ class PartitionManager(QMainWindow):
         self.partitions_data = []  # To store complete partition data
         self.selected_partitions = []  # To store selected partitions for operations
         
-        self.setWindowTitle("Partition Manager")
+        self.setWindowTitle("QuickADB Partition Manager")
         self.setMinimumSize(1000, 700)
         
         ThemeManager.apply_theme(self)
@@ -382,12 +455,12 @@ class PartitionManager(QMainWindow):
         self.log_window.setReadOnly(True)
         self.log_window.setMaximumHeight(150)
         
-        log_label = QLabel("Operation Log:")
+        self.log_label = QLabel("Operation Log:")
         log_font = QFont()
         log_font.setBold(True)
-        log_label.setFont(log_font)
+        self.log_label.setFont(log_font)
         
-        main_layout.addWidget(log_label)
+        main_layout.addWidget(self.log_label)
         main_layout.addWidget(self.log_window)
         
         # Status bar
@@ -408,7 +481,10 @@ class PartitionManager(QMainWindow):
             checkbox_item = self.model.item(row, 0)
             if select_all:
                 checkbox_item.setCheckState(Qt.CheckState.Checked)
-                self.selected_partitions.append(self.partitions_data[row])
+                # Store data in list, retrieving it from the item's UserRole
+                partition_info = checkbox_item.data(Qt.ItemDataRole.UserRole)
+                if partition_info:
+                    self.selected_partitions.append(partition_info)
             else:
                 checkbox_item.setCheckState(Qt.CheckState.Unchecked)
     
@@ -421,28 +497,24 @@ class PartitionManager(QMainWindow):
     
 
     def update_progress(self, message):
-        """Update progress dialog with status message."""
-        if hasattr(self, 'progress_dialog') and self.progress_dialog is not None:
-            # Extract numerical progress if possible
-            match = re.search(r'Processing (\d+)/(\d+)', message)
-            if match:
-                current, total = int(match.group(1)), int(match.group(2))
-                self.progress_dialog.setValue(current)
-            
-            # Update message
-            self.progress_dialog.setLabelText(message)        
+        """Update status bar and log label with pull progress."""
+        self.statusBar().showMessage(message)
+        if hasattr(self, 'log_label'):
+            self.log_label.setText(f"Operation Log: {message}")
     
+    def set_ui_enabled(self, state: bool):
+        """Helper to toggle main UI elements during long operations."""
+        self.refresh_button.setEnabled(state)
+        self.tree_view.setEnabled(state)
+        self.toggle_partition_selection_button.setEnabled(state)
+        self.pull_button.setEnabled(state)
+        self.flash_button.setEnabled(state)
+
     def load_partitions(self):
         """Start loading partitions in a worker thread."""
-        # Disable the UI elements
-        self.refresh_button.setEnabled(False)
-        self.tree_view.setEnabled(False)
-        self.toggle_partition_selection_button.setEnabled(False)
-        self.pull_button.setEnabled(False)
-        self.flash_button.setEnabled(False)
+        self.set_ui_enabled(False)
         
         # Status updates
-        self.log_message("Starting to load partitions from device...")
         self.statusBar().showMessage("Loading partitions...")
         
         # Create progress dialog
@@ -485,6 +557,8 @@ class PartitionManager(QMainWindow):
             select_item.setCheckable(True)
             select_item.setCheckState(Qt.CheckState.Unchecked)
             select_item.setEditable(False)
+            # Store the partition data in the item so sorting doesn't break selection
+            select_item.setData(partition_info, Qt.ItemDataRole.UserRole)
             
             # Set text properties for other columns (unchanged)
             name_item = QStandardItem(partition_info['name'])
@@ -514,14 +588,10 @@ class PartitionManager(QMainWindow):
             self.loading_progress.close()
         
         # Re-enable UI elements
-        self.refresh_button.setEnabled(True)
-        self.tree_view.setEnabled(True)
-        self.toggle_partition_selection_button.setEnabled(True)
-        self.pull_button.setEnabled(True)
-        self.flash_button.setEnabled(True)
+        self.set_ui_enabled(True)
         
         # Update status
-        self.log_message(f"Loaded {len(self.partitions_data)} partitions from device")
+
         self.statusBar().showMessage(f"Loaded {len(self.partitions_data)} partitions")
     
     def on_loading_error(self, error_message):
@@ -534,36 +604,33 @@ class PartitionManager(QMainWindow):
         QMessageBox.critical(self, "Error", error_message)
         
         # Re-enable UI elements
-        self.refresh_button.setEnabled(True)
-        self.tree_view.setEnabled(True)
-        self.toggle_partition_selection_button.setEnabled(True)
-        self.pull_button.setEnabled(True)
-        self.flash_button.setEnabled(True)
+        self.set_ui_enabled(True)
         
         # Update status
         self.statusBar().showMessage("Error loading partitions")
     
     def toggle_selection(self, index):
         """Toggle the selection state of a partition."""
+        # Use the proxy index to get the actual model item (handles sorting)
         row = index.row()
-        if row < 0 or row >= len(self.partitions_data):
-            return
-        
-        # Get the checkbox item
         checkbox_item = self.model.item(row, 0)
         
+        if not checkbox_item:
+            return
+            
         # Toggle checkbox state regardless of which column was clicked
         new_state = Qt.CheckState.Unchecked if checkbox_item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked
         checkbox_item.setCheckState(new_state)
         
         # Update the selection list based on the new state
-        self.update_selection_from_checkbox(row)
+        self.update_selection_from_checkbox(checkbox_item)
     
-    def update_selection_from_checkbox(self, row):
-        """Update selected_partitions list based on checkbox state."""
-        checkbox_item = self.model.item(row, 0)
-        partition_info = self.partitions_data[row]
-        
+    def update_selection_from_checkbox(self, checkbox_item):
+        """Update selected_partitions list based on checkbox state from the item itself."""
+        partition_info = checkbox_item.data(Qt.ItemDataRole.UserRole)
+        if not partition_info:
+            return
+            
         if checkbox_item.checkState() == Qt.CheckState.Checked:
             # Only add if not already in the list
             if not any(p['name'] == partition_info['name'] for p in self.selected_partitions):
@@ -593,21 +660,8 @@ class PartitionManager(QMainWindow):
         self.worker.progress.connect(self.update_progress)
         self.worker.finished_with_status.connect(self.pull_finished) 
         
-        # Create and configure progress dialog
-        self.progress_dialog = QProgressDialog("Preparing to pull partitions...", "Cancel", 0, len(self.selected_partitions), self)
-        self.progress_dialog.setWindowTitle("Pulling Partitions")
-        self.progress_dialog.setCancelButton(None)  # Disable cancel button for simplicity
-        self.progress_dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
-        self.progress_dialog.setMinimumWidth(400)
-        self.progress_dialog.show()
-        
         # Disable UI elements during operation
-        self.pull_button.setEnabled(False)
-        self.toggle_partition_selection_button.setEnabled(False)
-        self.tree_view.setEnabled(False)
-        self.refresh_button.setEnabled(False)
-        self.flash_button.setEnabled(False)
-        
+        self.set_ui_enabled(False)
         self.worker.start()
 
     def flash_partition(self):
@@ -661,12 +715,7 @@ class PartitionManager(QMainWindow):
         self.flash_worker.finished_with_status.connect(self.flash_finished)
         
         # Disable UI elements during operation
-        self.pull_button.setEnabled(False)
-        self.flash_button.setEnabled(False)
-        self.toggle_partition_selection_button.setEnabled(False)
-        self.tree_view.setEnabled(False)
-        self.refresh_button.setEnabled(False)
-        self.flash_button.setEnabled(False)
+        self.set_ui_enabled(False)
         
         self.flash_worker.start()        
 
@@ -676,12 +725,7 @@ class PartitionManager(QMainWindow):
             self.progress_dialog.close()
         
         # Re-enable UI elements
-        self.pull_button.setEnabled(True)
-        self.flash_button.setEnabled(True)
-        self.toggle_partition_selection_button.setEnabled(True)
-        self.tree_view.setEnabled(True)
-        self.refresh_button.setEnabled(True)
-        self.flash_button.setEnabled(True)
+        self.set_ui_enabled(True)
         
         partition_name = self.selected_partitions[0]['name'] if self.selected_partitions else "Unknown"
         
@@ -696,6 +740,9 @@ class PartitionManager(QMainWindow):
             self.statusBar().showMessage(f"Flash operation failed for {partition_name}")
             QMessageBox.critical(self, "Flash Failed", 
                               f"Failed to flash {partition_name} partition. Check logs for details.")
+        
+        # Reset log label
+        self.log_label.setText("Operation Log:")
             
                     
     
@@ -715,11 +762,7 @@ class PartitionManager(QMainWindow):
             self.progress_dialog.close()
         
         # Re-enable UI elements
-        self.pull_button.setEnabled(True)
-        self.toggle_partition_selection_button.setEnabled(True)
-        self.tree_view.setEnabled(True)
-        self.refresh_button.setEnabled(True)
-        self.flash_button.setEnabled(True)
+        self.set_ui_enabled(True)
         
         # Update status and show appropriate message based on success status
         if success and success_count == total_count:
@@ -730,13 +773,16 @@ class PartitionManager(QMainWindow):
         elif success and success_count < total_count:
             self.log_message(f"Partition pull operation completed with partial success: {success_count}/{total_count} partitions pulled.")
             self.statusBar().showMessage(f"Pull operation completed: {success_count}/{total_count} successful")
-            QMessageBox.warning(self, "Operation Partially Complete", 
-                             f"Pulled {success_count} out of {total_count} partitions. Some operations failed. Check logs for details.")
+            QMessageBox.warning(self, "Operation Partial Complete", 
+                                 f"Pulled {success_count} out of {total_count} partitions. Some errors occurred.")
         else:
-            self.log_message("Partition pull operation failed.")
+            self.log_message(f"Partition pull operation failed: 0/{total_count} partitions pulled.")
             self.statusBar().showMessage("Pull operation failed")
             QMessageBox.critical(self, "Operation Failed", 
-                              "Failed to pull partitions. Check logs for details.")
+                               "Failed to pull any partitions. Check logs for details.")
+                               
+        # Reset log label
+        self.log_label.setText("Operation Log:")
 
 
 
@@ -747,6 +793,3 @@ def main(platform_tools_path):
     window = PartitionManager(platform_tools_path)
     window.show()
     sys.exit(app.exec())
-
-if __name__ == "__main__":
-    main()

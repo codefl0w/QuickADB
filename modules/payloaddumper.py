@@ -1,3 +1,9 @@
+"""
+
+payloaddumper.py - Handles QuickADB's payload.bin dumper functionality.
+Essentially, just a GUI for ssut's payload-dumper-go.
+
+"""
 import sys
 import os
 
@@ -5,7 +11,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(script_dir)
 sys.path.insert(0, root_dir)
 
-import tempfile
+
 import subprocess
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QPushButton, QLabel,
@@ -14,6 +20,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QTextCursor, QColor
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from util.thememanager import ThemeManager
 
 
 class PayloadDumperThread(QThread):
@@ -44,6 +51,14 @@ class PayloadDumperThread(QThread):
                 self.payload_bin_path
             ]
             
+            # Windows specific: Create a new process group and hide the console window.
+            creationflags = 0
+            if os.name == 'nt':
+                creationflags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP |
+                    subprocess.CREATE_NO_WINDOW
+                )
+
             # Run the process
             process = subprocess.Popen(
                 command,
@@ -51,7 +66,8 @@ class PayloadDumperThread(QThread):
                 stderr=subprocess.PIPE,
                 text=True,
                 universal_newlines=True,
-                bufsize=1
+                bufsize=1,
+                creationflags=creationflags
             )
             
             # Process stdout in real-time
@@ -84,10 +100,10 @@ class PayloadDumperApp(QMainWindow):
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         
         # Main window setup
-        self.setWindowTitle("QuickADB payload.bin dumper")
+        self.setWindowTitle("QuickADB payload.bin Dumper")
         self.setMinimumSize(650, 500)
         self.setup_ui()
-        self.check_and_apply_global_theme()
+        ThemeManager.apply_theme(self)
         
     def setup_ui(self):
         # Create central widget
@@ -109,8 +125,8 @@ class PayloadDumperApp(QMainWindow):
         
         # Instructions label
         instructions_label = QLabel(
-            "This is a graphical interface for ssut's payload-dumper-go tool to extract partitions from Android OTA payload.bin files. "
-            "Select the payload.bin file and an output directory, then click 'Start Dumping'."
+            "This is a graphical interface for ssut's payload-dumper-go tool to extract partitions from Android OTA payload.bin files."
+            "https://github.com/ssut/payload-dumper-go"
         )
         instructions_label.setWordWrap(True)
         instructions_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -166,68 +182,10 @@ class PayloadDumperApp(QMainWindow):
         self.close_button = QPushButton("Close")
         self.close_button.clicked.connect(self.close)
         
-        self.clear_logs_button = QPushButton("Clear Logs")
-        self.clear_logs_button.clicked.connect(self.clear_logs)
-        
-        bottom_layout.addWidget(self.clear_logs_button)
-        bottom_layout.addStretch()
         bottom_layout.addWidget(self.close_button)
         
         main_layout.addLayout(bottom_layout)
-        
-    @staticmethod
-    def get_theme_config_path():
-        return os.path.join(tempfile.gettempdir(), "quickadb_theme_name")
-    
-    def check_and_apply_global_theme(self):
-        config_path = self.get_theme_config_path()
-        if not os.path.exists(config_path):
-            with open(config_path, "w") as f:
-                f.write("dark.qss")  # default theme
-        
-        with open(config_path, "r") as conf:
-            value = conf.read().strip()
-        
-        if value == "none":
-            self.apply_classic_theme()
-        else:
-            # Get absolute path to themes directory (go up one level from script location)
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            root_dir = os.path.dirname(script_dir)
-            theme_path = os.path.join(root_dir, "themes", value)
-            if os.path.exists(theme_path):
-                self.load_theme_qss(theme_path)
-            else:
-                # fallback to dark.qss if the selected theme doesn't exist
-                fallback = os.path.join(root_dir, "themes", "dark.qss")
-                self.load_theme_qss(fallback)
-                with open(config_path, "w") as f:
-                    f.write("dark.qss")
-    
-    def load_theme_qss(self, path):
-        with open(path, "r", encoding="utf-8") as f:
-            self.setStyleSheet(f.read())
-        
-        # save theme name globally
-        config_path = self.get_theme_config_path()
-        with open(config_path, "w") as conf:
-            conf.write(os.path.basename(path))
-    
-    def apply_classic_theme(self):
-        # Use PyQt's default widgets
-        self.setStyleSheet("")
-        self.style().polish(self)
-        for widget in self.findChildren(QWidget):
-            widget.style().polish(widget)
-        
-        config_path = self.get_theme_config_path()
-        with open(config_path, "w") as conf:
-            conf.write("none")
-    
-    def apply_dark_theme(self):
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        root_dir = os.path.dirname(script_dir)
-        self.load_theme_qss(os.path.join(root_dir, "themes", "dark.qss"))                      
+                          
     
     def select_payload_bin(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -255,14 +213,11 @@ class PayloadDumperApp(QMainWindow):
         self.log_output.moveCursor(QTextCursor.MoveOperation.End)
         if color:
             self.log_output.setTextColor(QColor(color))
+        else:
+            self.log_output.setTextColor(QColor(ThemeManager.TEXT_COLOR_PRIMARY))
         self.log_output.insertPlainText(message + "\n")
-        if color:
-            # Reset to default text color
-            self.log_output.setTextColor(QColor("#ffffff"))
+        self.log_output.setTextColor(QColor(ThemeManager.TEXT_COLOR_PRIMARY))
         self.log_output.ensureCursorVisible()
-    
-    def clear_logs(self):
-        self.log_output.clear()
     
     def start_dumping(self):
         if not self.payload_bin_path or not self.output_dir:

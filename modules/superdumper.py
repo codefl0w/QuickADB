@@ -1,3 +1,10 @@
+"""
+
+superdumper.py - Handles QuickADB's super.img dumper functionality.
+Essentially, just a GUI for unsuper.py.
+
+"""
+
 import sys
 import os
 
@@ -193,13 +200,22 @@ class SuperImgDumperUI(QMainWindow):
                 self.output_dir
             ]
             
+            # Windows specific: Create a new process group and hide the console window.
+            creationflags = 0
+            if os.name == 'nt':
+                creationflags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP |
+                    subprocess.CREATE_NO_WINDOW
+                )
+
             process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,  # Line buffered
-                cwd=script_dir  # Set working directory to script directory
+                cwd=script_dir,  # Set working directory to script directory
+                creationflags=creationflags
             )
             
             # Real-time output processing - read stdout and stderr in real-time

@@ -1,14 +1,7 @@
-#!/usr/bin/env python3
 """
-bootanimcreator.py
+bootanimcreator.py - QuickADB Boot Animation Creator. Supports extracting, creating, and pushing boot animations or creating modules.
+Uses Pillow to extract frames from GIFs. For videos, user must supply FFmpeg.
 
-QuickADB Boot Animation Creator — updated:
-- Uses tempfile for work/extract dirs (created at startup, cleaned on exit)
-- Extracted frames are loaded into RAM (QPixmap) and temporary frame folders are removed
-- Extraction (ffmpeg / GIF) runs in background threads
-- Create bootanimation.zip can build from the in-memory frame sequence (no reliance on extracted folder)
-- Push flow shows dialog: push created zip OR select & push arbitrary zip
-- Detailed logging for push steps returned and shown to user
 """
 import os
 import sys
@@ -21,9 +14,11 @@ import time
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple
 
-script_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = os.path.dirname(script_dir)
-sys.path.insert(0, root_dir)
+from util.resource import get_root_dir, resource_path, resolve_platform_tool
+
+root_dir = get_root_dir()
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 
 from util.thememanager import ThemeManager
 
@@ -31,16 +26,16 @@ from util.thememanager import ThemeManager
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFileDialog, QMessageBox, QSpinBox, QGroupBox, QLineEdit, QTextEdit, QGridLayout,
-    QDialog, QFormLayout, QDialogButtonBox, QPlainTextEdit
+    QDialog, QFormLayout, QDialogButtonBox, QPlainTextEdit, QSlider
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl
+from PyQt6.QtGui import QPixmap, QDesktopServices
 
 from PIL import Image, ImageSequence
 
-ADB_BIN = "adb.exe" if os.name == "nt" else "adb"
-PLATFORM_ADB = os.path.join(root_dir, "platform-tools", ADB_BIN)
-ADB_CMD = PLATFORM_ADB if os.path.exists(PLATFORM_ADB) else ADB_BIN
+PLATFORM_TOOLS_DIR = resource_path("platform-tools")
+PLATFORM_ADB = resolve_platform_tool(PLATFORM_TOOLS_DIR, "adb")
+ADB_CMD = PLATFORM_ADB if os.path.exists(PLATFORM_ADB) else ("adb.exe" if os.name == "nt" else "adb")
 
 BOOT_PATHS = [
     "/system/media/bootanimation.zip",
@@ -54,6 +49,63 @@ WORK_DIR = None
 EXTRACT_DIR = None
 PULLED_ZIP = None
 CREATED_ZIP_DEFAULT = None
+
+
+def _frame_sort_key(path_or_name: str):
+    """Sort key for frame files: numeric suffix first, then lexicographic fallback."""
+    nm = os.path.basename(path_or_name)
+    nums = re.findall(r"\d+", nm)
+    if nums:
+        try:
+            return (0, int(nums[-1]), "")
+        except Exception:
+            pass
+    return (1, 0, nm.lower())
+
+
+class FrameLoaderWorker(QThread):
+    progress = pyqtSignal(int, int)  # current, total
+    finished_seq = pyqtSignal(list, int)  # sequence, frame_ms
+    error = pyqtSignal(str)
+
+    def __init__(self, folders: List[str], width: int, height: int, fps: int):
+        super().__init__()
+        self.folders = folders
+        self.width = width
+        self.height = height
+        self.fps = fps
+
+    def run(self):
+        try:
+            valid_folders = [d for d in self.folders if os.path.isdir(d)]
+            if not valid_folders:
+                self.error.emit("No valid frame folders found.")
+                return
+
+            frame_ms = int(1000 / max(1, self.fps))
+            all_files = []
+            for d in valid_folders:
+                files = [os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))]
+                files.sort(key=_frame_sort_key)
+                all_files.extend(files)
+
+            if not all_files:
+                self.error.emit("No frames found.")
+                return
+
+            total = len(all_files)
+            seq = []
+            for i, fpath in enumerate(all_files):
+                pix = QPixmap(fpath)
+                if pix.isNull():
+                    continue
+                pix = pix.scaled(self.width, self.height, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                seq.append((pix, frame_ms, os.path.basename(fpath)))
+                self.progress.emit(i + 1, total)
+
+            self.finished_seq.emit(seq, frame_ms)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class FuncThread(QThread):
@@ -73,22 +125,19 @@ class FuncThread(QThread):
             self.done.emit(None, e)
 
 
-def ensure_work_dirs(create_temp=True):
+def ensure_work_dirs():
     """
     Initialize module-level WORK_DIR, EXTRACT_DIR, PULLED_ZIP, CREATED_ZIP_DEFAULT.
-    If create_temp is True, make a tempdir; otherwise use a persistent folder under project root.
     """
     global WORK_DIR, EXTRACT_DIR, PULLED_ZIP, CREATED_ZIP_DEFAULT
-    if create_temp:
+    if not WORK_DIR:
         WORK_DIR = tempfile.mkdtemp(prefix="qadb_work_")
-    else:
-        WORK_DIR = os.path.join(root_dir, "bootanim_work")
-        os.makedirs(WORK_DIR, exist_ok=True)
+    
     EXTRACT_DIR = os.path.join(WORK_DIR, "extracted")
     PULLED_ZIP = os.path.join(WORK_DIR, "bootanimation.zip")
     CREATED_ZIP_DEFAULT = os.path.join(WORK_DIR, "new_bootanimation.zip")
-    # ensure extract dir is clean
-    shutil.rmtree(EXTRACT_DIR, ignore_errors=True)
+    
+    # ensure extract dir exists
     os.makedirs(EXTRACT_DIR, exist_ok=True)
 
 
@@ -104,8 +153,17 @@ def cleanup_work_dirs():
 def find_remote_path_sync(adb_cmd: str = ADB_CMD) -> Optional[str]:
     for p in BOOT_PATHS:
         try:
+            # Windows specific: Create a new process group and hide the console window.
+            creationflags = 0
+            if os.name == 'nt':
+                creationflags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP |
+                    subprocess.CREATE_NO_WINDOW
+                )
+
             proc = subprocess.run([adb_cmd, "shell", "su", "-c", f'ls "{p}"'],
-                                  capture_output=True, text=True, timeout=6)
+                                  capture_output=True, text=True, timeout=6,
+                                  creationflags=creationflags)
         except Exception:
             continue
         out = (proc.stdout or "") + (proc.stderr or "")
@@ -122,35 +180,42 @@ def pull_root_zip_sync(remote_path: str, adb_cmd: str = ADB_CMD, local_dest: str
     tmp_remote = "/data/local/tmp/bootanimation_quickadb.zip"
     if local_dest is None:
         raise RuntimeError("local_dest must be specified")
+    # Windows specific: Create a new process group and hide the console window.
+    creationflags = 0
+    if os.name == 'nt':
+        creationflags = (
+            subprocess.CREATE_NEW_PROCESS_GROUP |
+            subprocess.CREATE_NO_WINDOW
+        )
     try:
         cp_cmd = [adb_cmd, "shell", "su", "-c", f'cp "{remote_path}" "{tmp_remote}" && chmod 0644 "{tmp_remote}"']
-        cp = subprocess.run(cp_cmd, capture_output=True, text=True, timeout=25)
+        cp = subprocess.run(cp_cmd, capture_output=True, text=True, timeout=25, creationflags=creationflags)
         if cp.returncode == 0:
-            pull = subprocess.run([adb_cmd, "pull", tmp_remote, local_dest], capture_output=True, text=True, timeout=90)
+            pull = subprocess.run([adb_cmd, "pull", tmp_remote, local_dest], capture_output=True, text=True, timeout=90, creationflags=creationflags)
             if pull.returncode == 0 and os.path.exists(local_dest):
-                subprocess.run([adb_cmd, "shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True)
+                subprocess.run([adb_cmd, "shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True, creationflags=creationflags)
                 return True
     except Exception:
         pass
     # fallback shell style
     try:
         proc = subprocess.run(f'{adb_cmd} shell su -c \'cp "{remote_path}" "{tmp_remote}" && chmod 0644 "{tmp_remote}"\'',
-                              shell=True, capture_output=True, text=True, timeout=30)
+                              shell=True, capture_output=True, text=True, timeout=30, creationflags=creationflags)
         if proc.returncode == 0:
-            pull = subprocess.run([adb_cmd, "pull", tmp_remote, local_dest], capture_output=True, text=True, timeout=90)
+            pull = subprocess.run([adb_cmd, "pull", tmp_remote, local_dest], capture_output=True, text=True, timeout=90, creationflags=creationflags)
             if pull.returncode == 0 and os.path.exists(local_dest):
-                subprocess.run(f'{adb_cmd} shell "su -c rm \\"{tmp_remote}\\""', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(f'{adb_cmd} shell "su -c rm \\"{tmp_remote}\\""', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags)
                 return True
     except Exception:
         pass
     try:
-        proc1 = subprocess.run([adb_cmd, "shell", f'su -c cp "{remote_path}" "{tmp_remote}"'], capture_output=True, text=True, timeout=20)
+        proc1 = subprocess.run([adb_cmd, "shell", f'su -c cp "{remote_path}" "{tmp_remote}"'], capture_output=True, text=True, timeout=20, creationflags=creationflags)
         if proc1.returncode == 0:
-            proc2 = subprocess.run([adb_cmd, "shell", f'su -c chmod 0644 "{tmp_remote}"'], capture_output=True, text=True, timeout=10)
+            proc2 = subprocess.run([adb_cmd, "shell", f'su -c chmod 0644 "{tmp_remote}"'], capture_output=True, text=True, timeout=10, creationflags=creationflags)
             if proc2.returncode == 0:
-                pull = subprocess.run([adb_cmd, "pull", tmp_remote, local_dest], capture_output=True, text=True, timeout=90)
+                pull = subprocess.run([adb_cmd, "pull", tmp_remote, local_dest], capture_output=True, text=True, timeout=90, creationflags=creationflags)
                 if pull.returncode == 0 and os.path.exists(local_dest):
-                    subprocess.run([adb_cmd, "shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True)
+                    subprocess.run([adb_cmd, "shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True, creationflags=creationflags)
                     return True
     except Exception:
         pass
@@ -225,7 +290,15 @@ def extract_video_frames_sync(video_path: str, width: int, height: int, ffmpeg_p
     if width > 0 and height > 0:
         args += ["-vf", f"scale={width}:{height}:flags=lanczos"]
     args += [out_pattern]
-    proc = subprocess.run(args, capture_output=True, text=True, timeout=600)
+    # Windows specific: Create a new process group and hide the console window.
+    creationflags = 0
+    if os.name == 'nt':
+        creationflags = (
+            subprocess.CREATE_NEW_PROCESS_GROUP |
+            subprocess.CREATE_NO_WINDOW
+        )
+
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=600, creationflags=creationflags)
     if proc.returncode != 0:
         try:
             shutil.rmtree(out_dir)
@@ -264,17 +337,19 @@ def _make_zip_with_permissions(root_dir: str, out_zip: str, perms: Dict[str, int
     """
     if perms is None:
         perms = {}
-    with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_STORED) as zf:
         for rootp, dirs, files in os.walk(root_dir):
             for fn in files:
                 full = os.path.join(rootp, fn)
                 rel = os.path.relpath(full, root_dir)
-                zf.write(full, rel)
+                # zipfile internally uses forward slashes, so normalize for the lookup
+                rel_zip = rel.replace("\\", "/")
+                zf.write(full, rel_zip)
                 # set external attr for permissions if provided
-                if rel in perms:
-                    info = zf.getinfo(rel)
+                if rel_zip in perms:
+                    info = zf.getinfo(rel_zip)
                     # mode in upper 16 bits
-                    info.external_attr = (perms[rel] & 0xFFFF) << 16
+                    info.external_attr = (perms[rel_zip] & 0xFFFF) << 16
 
 
 def create_module_sync(module_meta: Dict[str, str], save_zip: str, created_boot_zip: str, remote_path: str, alias: str):
@@ -440,15 +515,21 @@ class PushDialog(QDialog):
         self.accept()
 
 
+def run_bootanim_creator(parent=None):
+    """Entry point for QuickADB to launch the Boot Animation Creator."""
+    window = BootAnimWidget()
+    window.show()
+    return window
+
 class BootAnimWidget(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Boot Animation Creator — QuickADB")
+        self.setWindowTitle("QuickADB Boot Animation Creator")
         self.setMinimumSize(980, 720)
         ThemeManager.apply_theme(self)
 
         # create temp work dirs
-        ensure_work_dirs(create_temp=True)
+        ensure_work_dirs()
         self.adb_cmd = ADB_CMD
 
         self.remote_path: Optional[str] = None
@@ -481,6 +562,7 @@ class BootAnimWidget(QWidget):
         self._last_created_frames_dir: Optional[str] = None
 
         self._build_ui()
+        # setup status bar (manually since QWidget doesn't have it by default, but we'll add it to layout)
         QTimer.singleShot(150, self._startup_ffmpeg_check)
 
     def _build_ui(self):
@@ -551,16 +633,20 @@ class BootAnimWidget(QWidget):
         # reserved placeholder buttons (future features)
         self.reserved_btn1 = QPushButton("Create Flashable Module")
         self.reserved_btn1.clicked.connect(self.create_flashable_module_flow)
-        self.reserved_btn2 = QPushButton("Reserved 2")
-        self.reserved_btn3 = QPushButton("Reserved 3")
+        
+        self.clear_btn = QPushButton("Clear Frames / Workdir")
+        self.clear_btn.clicked.connect(self.clear_all_frames)
+        
+        self.workdir_btn = QPushButton("Open Work Directory")
+        self.workdir_btn.clicked.connect(self.open_work_directory)
 
         # Layout the 3x2 grid
         created_layout.addWidget(self.create_zip_btn, 0, 0)
         created_layout.addWidget(self.backup_btn, 0, 1)
         created_layout.addWidget(self.push_zip_btn, 1, 0)
         created_layout.addWidget(self.reserved_btn1, 1, 1)
-        created_layout.addWidget(self.reserved_btn2, 2, 0)
-        created_layout.addWidget(self.reserved_btn3, 2, 1)
+        created_layout.addWidget(self.clear_btn, 2, 0)
+        created_layout.addWidget(self.workdir_btn, 2, 1)
 
         created_grp.setLayout(created_layout)
         left_col.addWidget(created_grp)
@@ -581,6 +667,13 @@ class BootAnimWidget(QWidget):
         cur_group.addWidget(QLabel("Current (device)", alignment=Qt.AlignmentFlag.AlignCenter))
         self.cur_label = QLabel(); self.cur_label.setFixedSize(preview_w, preview_h); self.cur_label.setStyleSheet("background:#0d0d0d;"); self.cur_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cur_group.addWidget(self.cur_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        self.cur_meta = QLabel("Frame: -"); self.cur_meta.setAlignment(Qt.AlignmentFlag.AlignCenter); self.cur_meta.setStyleSheet("font-size: 9px; color: #888;")
+        cur_group.addWidget(self.cur_meta)
+        self.cur_seek = QSlider(Qt.Orientation.Horizontal); self.cur_seek.setEnabled(False)
+        self.cur_seek.sliderMoved.connect(lambda val: self._on_seek_moved("current", val))
+        cur_group.addWidget(self.cur_seek)
+
         cur_btn_row = QHBoxLayout()
         self.cur_play_btn = QPushButton("▶"); self.cur_play_btn.setFixedSize(40, 28); self.cur_play_btn.clicked.connect(self.toggle_current)
         cur_btn_row.addWidget(self.cur_play_btn); cur_btn_row.addStretch()
@@ -592,6 +685,13 @@ class BootAnimWidget(QWidget):
         new_group.addWidget(QLabel("Created (local preview)", alignment=Qt.AlignmentFlag.AlignCenter))
         self.new_label = QLabel(); self.new_label.setFixedSize(preview_w, preview_h); self.new_label.setStyleSheet("background:#0d0d0d;"); self.new_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         new_group.addWidget(self.new_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        self.new_meta = QLabel("Frame: -"); self.new_meta.setAlignment(Qt.AlignmentFlag.AlignCenter); self.new_meta.setStyleSheet("font-size: 9px; color: #888;")
+        new_group.addWidget(self.new_meta)
+        self.new_seek = QSlider(Qt.Orientation.Horizontal); self.new_seek.setEnabled(False)
+        self.new_seek.sliderMoved.connect(lambda val: self._on_seek_moved("created", val))
+        new_group.addWidget(self.new_seek)
+
         new_btn_row = QHBoxLayout()
         self.new_play_btn = QPushButton("▶"); self.new_play_btn.setFixedSize(40, 28); self.new_play_btn.clicked.connect(self.toggle_created)
         new_btn_row.addWidget(self.new_play_btn); new_btn_row.addStretch()
@@ -612,9 +712,6 @@ class BootAnimWidget(QWidget):
         if path:
             self.log(f"ffmpeg found in PATH: {path}")
             self._check_ffmpeg_version(path)
-            self.ffmpeg_resolved_path = path
-            self.ffmpeg_path = path
-            self.ffmpeg_edit.setText(path)
         else:
             self.log("ffmpeg not found in PATH")
 
@@ -632,9 +729,16 @@ class BootAnimWidget(QWidget):
             return
         self._check_ffmpeg_version(p)
 
-    def _check_ffmpeg_version(self, path: str):
+        # Windows specific: Create a new process group and hide the console window.
+        creationflags = 0
+        if os.name == 'nt':
+            creationflags = (
+                subprocess.CREATE_NEW_PROCESS_GROUP |
+                subprocess.CREATE_NO_WINDOW
+            )
+
         try:
-            proc = subprocess.run([path, "-version"], capture_output=True, text=True, timeout=6)
+            proc = subprocess.run([path, "-version"], capture_output=True, text=True, timeout=6, creationflags=creationflags)
             out = proc.stdout or proc.stderr or ""
             first = out.splitlines()[0] if out.splitlines() else out.strip()
             self.log(f"ffmpeg: {first}")
@@ -650,16 +754,11 @@ class BootAnimWidget(QWidget):
         def cleanup():
             try:
                 self._threads.remove(t)
-            except Exception:
+            except ValueError:
                 pass
-        try:
-            t.finished.connect(cleanup)
-        except Exception:
-            pass
-        try:
+        t.finished.connect(cleanup)
+        if hasattr(t, "done"):
             t.done.connect(lambda *_: cleanup())
-        except Exception:
-            pass
         t.start()
         return t
 
@@ -712,36 +811,38 @@ class BootAnimWidget(QWidget):
         if not folder_name:
             return None
         token = folder_name.strip().lstrip("./").rstrip("/")
-        candidate = os.path.join(EXTRACT_DIR, token)
+        candidate = os.path.normpath(os.path.join(EXTRACT_DIR, token))
         if os.path.isdir(candidate):
             return candidate
-        cand2 = os.path.normpath(os.path.join(EXTRACT_DIR, token))
-        if os.path.isdir(cand2):
-            return cand2
         if token.isdigit():
             for t in (f"part{token}", f"p{token}", token):
                 c = os.path.join(EXTRACT_DIR, t)
                 if os.path.isdir(c):
                     return c
-        for rootp, dirs, _ in os.walk(EXTRACT_DIR):
-            for d in dirs:
-                if d == token:
-                    return os.path.join(rootp, d)
-        if token.isdigit():
-            for rootp, dirs, _ in os.walk(EXTRACT_DIR):
-                for d in dirs:
-                    if d.endswith(token):
-                        return os.path.join(rootp, d)
-        for rootp, dirs, _ in os.walk(EXTRACT_DIR):
-            for d in dirs:
-                if token.lower() in d.lower():
-                    return os.path.join(rootp, d)
         base = os.path.basename(token)
+        # Collect all subdirectories in a single walk, then apply match strategies in priority order.
+        all_dirs: List[Tuple[str, str]] = []  # (dirpath, dirname)
+        for rootp, dirs, _ in os.walk(EXTRACT_DIR):
+            for d in dirs:
+                all_dirs.append((os.path.join(rootp, d), d))
+        # 1. Exact name match
+        for path, name in all_dirs:
+            if name == token:
+                return path
+        # 2. Numeric suffix match (only when token is a digit string)
+        if token.isdigit():
+            for path, name in all_dirs:
+                if name.endswith(token):
+                    return path
+        # 3. Case-insensitive substring match
+        for path, name in all_dirs:
+            if token.lower() in name.lower():
+                return path
+        # 4. Basename exact match
         if base:
-            for rootp, dirs, _ in os.walk(EXTRACT_DIR):
-                for d in dirs:
-                    if d == base:
-                        return os.path.join(rootp, d)
+            for path, name in all_dirs:
+                if name == base:
+                    return path
         return None
 
     def _on_parse_done(self, result, error):
@@ -757,81 +858,63 @@ class BootAnimWidget(QWidget):
         self.current_info = info
         self.log(f"Parsed boot animation: {info['width']}x{info['height']}@{info['fps']}, parts: {len(info['parts'])}")
         self.build_sequence_from_info(info, which="current")
-        if self.seq_current:
-            self.start_current()
-        else:
-            for p in info.get("parts", []):
-                token = p.get("folder")
-                resolved = p.get("folder_path") or self._resolve_folder_path(token or "")
-                count = 0
-                if resolved and os.path.isdir(resolved):
-                    count = len([f for f in os.listdir(resolved) if os.path.isfile(os.path.join(resolved, f))])
-                self.log(f"[DEBUG] Part '{token}' resolved to '{resolved}', files: {count}")
-            self.log("[WARN] No current sequence to play. Check extracted folders and desc.txt entries.")
-            QMessageBox.information(self, "No frames", "No playable frames were found in the extracted bootanimation. See log for details.")
 
     # ---------- sequence builder (unchanged flatten/ordering approach) ----------
     def build_sequence_from_info(self, info: Dict, which: str = "current"):
         fps = int(info.get("fps", 30) or 30)
-        frame_ms = int(1000 / max(1, fps))
         def part_index(name: str):
             m = re.fullmatch(r"part(\d+)", name, flags=re.IGNORECASE)
             return int(m.group(1)) if m else None
-        part_dirs = []
+        
+        folders = []
         if os.path.isdir(EXTRACT_DIR):
+            part_dirs = []
             for name in os.listdir(EXTRACT_DIR):
                 idx = part_index(name)
                 if idx is not None:
                     p = os.path.join(EXTRACT_DIR, name)
                     if os.path.isdir(p):
                         part_dirs.append((idx, p))
-        part_dirs.sort(key=lambda t: t[0])
-        if not part_dirs:
-            self.log("[ERROR] No partN folders found under extract dir.")
-            if which == "current":
-                self.seq_current = []
-            else:
-                self.seq_created = []
+            part_dirs.sort(key=lambda t: t[0])
+            folders = [p for _, p in part_dirs]
+
+        if not folders:
+            self.log("[WARN] No partN folders found.")
             return
-        def numeric_key(name: str):
-            nums = re.findall(r"\d+", name)
-            if nums:
-                try:
-                    return (int(nums[-1]), name.lower())
-                except Exception:
-                    pass
-            return (10**12, name.lower())
-        seq: List[Tuple[QPixmap, int]] = []
-        total_files = 0
+
         target_w = self.cur_label.width() if which == "current" else self.new_label.width()
         target_h = self.cur_label.height() if which == "current" else self.new_label.height()
-        for idx, folder in part_dirs:
-            files = [f for f in os.listdir(folder)
-                     if os.path.isfile(os.path.join(folder, f))
-                     and f.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp"))]
-            files.sort(key=numeric_key)
-            total_files += len(files)
-            for fname in files:
-                path = os.path.join(folder, fname)
-                pix = QPixmap(path)
-                if pix.isNull():
-                    self.log(f"[WARN] Null image skipped: {path}")
-                    continue
-                pix = pix.scaled(target_w, target_h,
-                                 Qt.AspectRatioMode.KeepAspectRatio,
-                                 Qt.TransformationMode.SmoothTransformation)
-                seq.append((pix, frame_ms))
-        self.log(f"[INFO] Loaded {len(seq)} frames (actual files found: {total_files})")
+        
+        self.log(f"[INFO] Starting async frame loader for '{which}'...")
+        self._launch_loader(folders, target_w, target_h, fps, which)
+
+    def _launch_loader(self, folders: list, target_w: int, target_h: int, fps: int, which: str):
+        """Create, wire, and start a FrameLoaderWorker."""
+        loader = FrameLoaderWorker(folders, target_w, target_h, fps)
+        loader._which = which
+        loader.finished_seq.connect(self._on_loader_done)
+        loader.error.connect(lambda e: self.log(f"[ERROR] Loader error: {e}"))
+        self._start_thread(loader)
+
+    def _on_loader_done(self, seq, frame_ms):
+        loader = self.sender()
+        which = getattr(loader, "_which", "created")
+        self.log(f"[INFO] Loaded {len(seq)} frames for '{which}'.")
+        
         if which == "current":
             self.seq_current = seq
             self.play_index_current = 0
             self.frame_ms_current = frame_ms
-            self.log(f"[INFO] Built current sequence: {len(seq)} frames @ {fps}fps")
+            self.cur_seek.setRange(0, len(seq) - 1)
+            self.cur_seek.setEnabled(True)
+            self.start_current()
         else:
             self.seq_created = seq
             self.play_index_created = 0
             self.frame_ms_created = frame_ms
-            self.log(f"[INFO] Built created sequence: {len(seq)} frames @ {fps}fps")
+            self.new_seek.setRange(0, len(seq) - 1)
+            self.new_seek.setEnabled(True)
+            self.start_created()
 
     # ---------- select animation ----------
     def select_animation_file(self):
@@ -901,48 +984,15 @@ class BootAnimWidget(QWidget):
             self.log(f"[ERROR] Frames folder missing: {frames_dir}")
             return
         try:
-            fps = int(self.fps_spin.value()) if getattr(self, "fps_spin", None) else int(getattr(self, "current_info", {}).get("fps", 30) or 30)
+            fps = int(self.fps_spin.value()) if getattr(self, "fps_spin", None) else 30
         except Exception:
             fps = 30
-        frame_ms = int(1000 / max(1, fps))
-        files = [f for f in os.listdir(frames_dir) if f.lower().endswith(".png")]
-        if not files:
-            self.log("[ERROR] No PNG frames found for preview.")
-            return
-        def keyfn(nm):
-            nums = re.findall(r"\d+", nm)
-            if nums:
-                try:
-                    return int(nums[-1])
-                except:
-                    pass
-            return nm.lower()
-        files.sort(key=keyfn)
+
         target_w = self.cur_label.width() if which == "current" else self.new_label.width()
         target_h = self.cur_label.height() if which == "current" else self.new_label.height()
-        seq = []
-        loaded = 0
-        for fname in files:
-            path = os.path.join(frames_dir, fname)
-            pix = QPixmap(path)
-            if pix.isNull():
-                self.log(f"[WARN] Skipping null image: {path}")
-                continue
-            pix = pix.scaled(target_w, target_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            seq.append((pix, frame_ms))
-            loaded += 1
-        self.log(f"[INFO] Loaded {loaded} frames from {frames_dir} @ {fps}fps")
-        if which == "current":
-            self.seq_current = seq
-            self.play_index_current = 0
-            self.frame_ms_current = frame_ms
-        else:
-            # replace any existing created sequence (we now hold frames in RAM)
-            # remove previous created frames dir if any
-            self.seq_created = seq
-            self.play_index_created = 0
-            self.frame_ms_created = frame_ms
-            self._last_created_frames_dir = None
+        
+        self.log(f"[INFO] Starting async frame loader for '{which}'...")
+        self._launch_loader([frames_dir], target_w, target_h, fps, which)
 
     # ---------- create / push ----------
     def _detect_created_frames_dir(self) -> Optional[str]:
@@ -978,15 +1028,7 @@ class BootAnimWidget(QWidget):
                 if not files:
                     QMessageBox.warning(self, "No frames", "No image frames found in selected frames directory.")
                     return
-                def keyfn(nm):
-                    nums = re.findall(r"\d+", nm)
-                    if nums:
-                        try:
-                            return int(nums[-1])
-                        except:
-                            pass
-                    return nm.lower()
-                files.sort(key=keyfn)
+                files.sort(key=_frame_sort_key)
                 for i, fname in enumerate(files):
                     src = os.path.join(frames_dir, fname)
                     dstname = f"{i:05d}.png"
@@ -1005,7 +1047,7 @@ class BootAnimWidget(QWidget):
                 if not getattr(self, "seq_created", None):
                     QMessageBox.warning(self, "No frames", "No created frames in memory. Use 'Preview' first.")
                     return
-                for i, (pix, _) in enumerate(self.seq_created):
+                for i, (pix, _, _) in enumerate(self.seq_created):
                     dst = os.path.join(part0, f"{i:05d}.png")
                     try:
                         # QPixmap.save accepts PNG path
@@ -1026,13 +1068,13 @@ class BootAnimWidget(QWidget):
             except Exception:
                 w, h, fps = 720, 240, 30
             desc = f"{w} {h} {fps}\n" + "p 1 0 part0\n"
-            with open(os.path.join(tmp_build, "desc.txt"), "w", encoding="utf-8") as f:
+            with open(os.path.join(tmp_build, "desc.txt"), "w", encoding="utf-8", newline='\n') as f:
                 f.write(desc)
 
             # create zip
             zip_out = self.created_zip_path
             os.makedirs(os.path.dirname(zip_out) or ".", exist_ok=True)
-            with zipfile.ZipFile(zip_out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            with zipfile.ZipFile(zip_out, "w", compression=zipfile.ZIP_STORED) as zf:
                 for rootp, dirs, files2 in os.walk(tmp_build):
                     for fnm in files2:
                         full = os.path.join(rootp, fnm)
@@ -1084,6 +1126,14 @@ class BootAnimWidget(QWidget):
         except Exception:
             pass
 
+    @staticmethod
+    def _log_proc(logs: list, proc, label: str):
+        """Append stdout/stderr from a subprocess result to the log list."""
+        if proc.stdout:
+            logs.append(f"[PUSH] {label} stdout: {proc.stdout.strip()}")
+        if proc.stderr:
+            logs.append(f"[PUSH] {label} stderr: {proc.stderr.strip()}")
+
     def _push_zip_verbose_sync(self, local_zip: str, remote_path: Optional[str], adb_cmd: str = ADB_CMD) -> str:
         """
         Push the given local_zip to the device. Produce a verbose log describing each step.
@@ -1094,53 +1144,50 @@ class BootAnimWidget(QWidget):
             raise RuntimeError("Local ZIP missing")
         if not remote_path:
             raise RuntimeError("Remote install path unknown. Run Find/Pull first.")
+        
+        # Windows specific: Create a new process group and hide the console window.
+        creationflags = 0
+        if os.name == 'nt':
+            creationflags = (
+                subprocess.CREATE_NEW_PROCESS_GROUP |
+                subprocess.CREATE_NO_WINDOW
+            )
+
         tmp_remote = "/data/local/tmp/quickadb_push_bootanim.zip"
         logs.append(f"[PUSH] Pushing {local_zip} -> {tmp_remote} via adb push")
-        push = subprocess.run([adb_cmd, "push", local_zip, tmp_remote], capture_output=True, text=True, timeout=300)
+        push = subprocess.run([adb_cmd, "push", local_zip, tmp_remote], capture_output=True, text=True, timeout=300, creationflags=creationflags)
         logs.append(f"[PUSH] adb push rc={push.returncode}")
-        if push.stdout:
-            logs.append(f"[PUSH] stdout: {push.stdout.strip()}")
-        if push.stderr:
-            logs.append(f"[PUSH] stderr: {push.stderr.strip()}")
+        self._log_proc(logs, push, "push")
         if push.returncode != 0:
             raise RuntimeError("\n".join(logs + ["adb push failed"]))
         # attempt copy using root
         cp_cmd = f'su -c cp "{tmp_remote}" "{remote_path}" && su -c chmod 0644 "{remote_path}"'
         logs.append(f"[PUSH] Attempting root copy to {remote_path}")
-        proc = subprocess.run([adb_cmd, "shell", cp_cmd], shell=False, capture_output=True, text=True, timeout=60)
+        proc = subprocess.run([adb_cmd, "shell", cp_cmd], shell=False, capture_output=True, text=True, timeout=60, creationflags=creationflags)
         logs.append(f"[PUSH] root copy rc={proc.returncode}")
-        if proc.stdout:
-            logs.append(f"[PUSH] stdout: {proc.stdout.strip()}")
-        if proc.stderr:
-            logs.append(f"[PUSH] stderr: {proc.stderr.strip()}")
+        self._log_proc(logs, proc, "root copy")
         # if success
         if proc.returncode == 0:
             # cleanup tmp remote
-            subprocess.run([adb_cmd, "shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True)
+            subprocess.run([adb_cmd, "shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True, creationflags=creationflags)
             logs.append(f"[PUSH] Installed to {remote_path} (root copy succeeded)")
             return "\n".join(logs)
         # try remount RW then copy
         logs.append("[PUSH] Root copy failed; attempting remount and retry")
         remount_cmd = [adb_cmd, "shell", "su", "-c", 'mount -o remount,rw /system || mount -o remount,rw /system_root || true']
-        rem = subprocess.run(remount_cmd, capture_output=True, text=True, timeout=20)
+        rem = subprocess.run(remount_cmd, capture_output=True, text=True, timeout=20, creationflags=creationflags)
         logs.append(f"[PUSH] remount rc={rem.returncode}")
-        if rem.stdout:
-            logs.append(f"[PUSH] remount stdout: {rem.stdout.strip()}")
-        if rem.stderr:
-            logs.append(f"[PUSH] remount stderr: {rem.stderr.strip()}")
+        self._log_proc(logs, rem, "remount")
         # retry copy
-        proc2 = subprocess.run([adb_cmd, "shell", cp_cmd], shell=False, capture_output=True, text=True, timeout=60)
+        proc2 = subprocess.run([adb_cmd, "shell", cp_cmd], shell=False, capture_output=True, text=True, timeout=60, creationflags=creationflags)
         logs.append(f"[PUSH] retry root copy rc={proc2.returncode}")
-        if proc2.stdout:
-            logs.append(f"[PUSH] stdout: {proc2.stdout.strip()}")
-        if proc2.stderr:
-            logs.append(f"[PUSH] stderr: {proc2.stderr.strip()}")
+        self._log_proc(logs, proc2, "retry")
         if proc2.returncode == 0:
-            subprocess.run([adb_cmd, "shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True)
+            subprocess.run([adb_cmd, "shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True, creationflags=creationflags)
             logs.append(f"[PUSH] Installed to {remote_path} after remount")
             return "\n".join(logs)
         # final cleanup and error
-        subprocess.run([adb_cmd, "shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True)
+        subprocess.run([adb_cmd, "shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True, creationflags=creationflags)
         logs.append("[PUSH] All methods failed to copy to target.")
         raise RuntimeError("\n".join(logs))
 
@@ -1196,103 +1243,163 @@ class BootAnimWidget(QWidget):
         QMessageBox.information(self, "Module created", result)
 
     # ---------- playback tickers / controls ----------
-    def _tick_current(self):
-        if not getattr(self, "seq_current", None):
+    def _attrs(self, which: str):
+        """Return the group of per-side attributes as a dict for the given side."""
+        if which == "current":
+            return dict(
+                seq=self.seq_current,
+                playing=self.playing_current,
+                play_index="play_index_current",
+                frame_ms=getattr(self, "frame_ms_current", 33),
+                start_time="start_time_current",
+                label=self.cur_label,
+                meta=self.cur_meta,
+                seek=self.cur_seek,
+                play_btn=self.cur_play_btn,
+                timer=self.timer_current,
+            )
+        return dict(
+            seq=self.seq_created,
+            playing=self.playing_created,
+            play_index="play_index_created",
+            frame_ms=getattr(self, "frame_ms_created", 33),
+            start_time="start_time_created",
+            label=self.new_label,
+            meta=self.new_meta,
+            seek=self.new_seek,
+            play_btn=self.new_play_btn,
+            timer=self.timer_created,
+        )
+
+    def _tick(self, which: str):
+        a = self._attrs(which)
+        if not a["seq"] or not a["playing"]:
             return
-        total = len(self.seq_current)
+        total = len(a["seq"])
         if total == 0:
             return
         now_ms = int(time.time() * 1000)
-        start = getattr(self, "start_time_current", None)
+        start = getattr(self, a["start_time"], None)
         if start is None:
             return
         elapsed = now_ms - start
-        frame_duration = getattr(self, "frame_ms_current", 33)
-        frame_index_float = elapsed / frame_duration
-        idx = int(frame_index_float) % total
-        if idx != self.play_index_current:
-            self.play_index_current = idx
-            pix, _ = self.seq_current[idx]
-            self.cur_label.setPixmap(pix)
+        idx = int(elapsed / a["frame_ms"]) % total
+        cur_idx = getattr(self, a["play_index"])
+        if idx != cur_idx:
+            setattr(self, a["play_index"], idx)
+            self._update_preview(which)
+
+    def _tick_current(self):
+        self._tick("current")
 
     def _tick_created(self):
-        if not getattr(self, "seq_created", None):
+        self._tick("created")
+
+    def _start(self, which: str):
+        a = self._attrs(which)
+        if not a["seq"]:
+            self.log(f"No {which} sequence to play.")
             return
-        total = len(self.seq_created)
-        if total == 0:
-            return
-        now_ms = int(time.time() * 1000)
-        start = getattr(self, "start_time_created", None)
-        if start is None:
-            return
-        elapsed = now_ms - start
-        frame_duration = getattr(self, "frame_ms_created", 33)
-        frame_index_float = elapsed / frame_duration
-        idx = int(frame_index_float) % total
-        if idx != self.play_index_created:
-            self.play_index_created = idx
-            pix, _ = self.seq_created[idx]
-            self.new_label.setPixmap(pix)
+        idx = getattr(self, a["play_index"])
+        if which == "current":
+            self.playing_current = True
+        else:
+            self.playing_created = True
+        a["play_btn"].setText("⏸")
+        setattr(self, a["start_time"], int(time.time() * 1000) - (idx * a["frame_ms"]))
+        a["timer"].start(int(a["frame_ms"] / 2))
+        self._update_preview(which)
 
     def start_current(self):
-        if not getattr(self, "seq_current", None):
-            self.log("No current sequence to play.")
-            return
-        self.start_time_current = int(time.time() * 1000)
-        self.play_index_current = 0
-        self._last_logged_current = -1
-        self.timer_current.stop()
-        self.timer_current.setInterval(16)
-        try:
-            self.timer_current.timeout.disconnect()
-        except Exception:
-            pass
-        self.timer_current.timeout.connect(self._tick_current)
-        self.timer_current.start()
-        self.playing_current = True
-        self.cur_play_btn.setText("⏸")
-        if self.seq_current:
-            pix, _ = self.seq_current[0]
-            self.cur_label.setPixmap(pix)
+        self._start("current")
 
     def start_created(self):
-        if not getattr(self, "seq_created", None):
-            self.log("No created sequence to play.")
+        self._start("created")
+
+    def _stop(self, which: str):
+        a = self._attrs(which)
+        if which == "current":
+            self.playing_current = False
+        else:
+            self.playing_created = False
+        a["play_btn"].setText("▶")
+        a["timer"].stop()
+
+    def stop_current(self):
+        self._stop("current")
+
+    def stop_created(self):
+        self._stop("created")
+
+    def _on_seek_moved(self, which, value):
+        a = self._attrs(which)
+        if a["seq"]:
+            setattr(self, a["play_index"], value)
+            self._update_preview(which)
+            if a["playing"]:
+                idx = getattr(self, a["play_index"])
+                setattr(self, a["start_time"], int(time.time() * 1000) - (idx * a["frame_ms"]))
+
+    def _update_preview(self, which: str):
+        a = self._attrs(which)
+        seq = a["seq"]
+        if not seq:
             return
-        self.start_time_created = int(time.time() * 1000)
-        self.play_index_created = 0
-        self._last_logged_created = -1
-        self.timer_created.stop()
-        self.timer_created.setInterval(16)
-        try:
-            self.timer_created.timeout.disconnect()
-        except Exception:
-            pass
-        self.timer_created.timeout.connect(self._tick_created)
-        self.timer_created.start()
-        self.playing_created = True
-        self.new_play_btn.setText("⏸")
-        if self.seq_created:
-            pix, _ = self.seq_created[0]
-            self.new_label.setPixmap(pix)
+        idx = getattr(self, a["play_index"])
+        pix, ms, fname = seq[idx]
+        a["label"].setPixmap(pix)
+        total_s = (len(seq) * ms) / 1000
+        curr_s = (idx * ms) / 1000
+        a["meta"].setText(f"{fname} | {curr_s:.1f}s / {total_s:.1f}s | {idx + 1}/{len(seq)}")
+        a["seek"].blockSignals(True)
+        a["seek"].setValue(idx)
+        a["seek"].blockSignals(False)
 
     def toggle_current(self):
-        if self.playing_current:
-            self.timer_current.stop()
-            self.playing_current = False
-            self.cur_play_btn.setText("▶")
-            self.log(f"[PAUSE] Paused at frame {self.play_index_current}")
-        else:
-            self.start_current()
+        self._toggle("current")
 
     def toggle_created(self):
-        if self.playing_created:
-            self.timer_created.stop()
-            self.playing_created = False
-            self.new_play_btn.setText("▶")
-            self.log(f"[PAUSE] Paused at frame {self.play_index_created}")
+        self._toggle("created")
+
+    def _toggle(self, which: str):
+        a = self._attrs(which)
+        if a["playing"]:
+            a["timer"].stop()
+            if which == "current":
+                self.playing_current = False
+            else:
+                self.playing_created = False
+            a["play_btn"].setText("▶")
+            self.log(f"[PAUSE] Paused at frame {getattr(self, a['play_index'])}")
         else:
-            self.start_created()
+            self._start(which)
+
+    def open_work_directory(self):
+        if WORK_DIR and os.path.exists(WORK_DIR):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(WORK_DIR)))
+            self.log(f"[INFO] Opening work directory: {WORK_DIR}")
+        else:
+            self.log("[WARN] Work directory not found.")
+
+    def clear_all_frames(self):
+        reply = QMessageBox.question(self, "Clear All?", "This will delete all extracted frames in the temporary work directory and clear previews.\n\nProceed?",
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.seq_current = []
+            self.seq_created = []
+            self.cur_label.clear(); self.cur_label.setText("Cleared")
+            self.new_label.clear(); self.new_label.setText("Cleared")
+            self.playing_current = False; self.playing_created = False
+            self.cur_play_btn.setText("▶"); self.new_play_btn.setText("▶")
+            self.log("[INFO] Sequences cleared.")
+            # wipe EXTRACT_DIR if it exists
+            if EXTRACT_DIR and os.path.exists(EXTRACT_DIR):
+                try:
+                    shutil.rmtree(EXTRACT_DIR)
+                    os.makedirs(EXTRACT_DIR, exist_ok=True)
+                    self.log("[INFO] Temp extract folder wiped.")
+                except Exception as e:
+                    self.log(f"[WARN] Failed wiping workdir: {e}")
 
     # ---------- misc UI helpers ----------
     def choose_created_zip(self):
@@ -1326,8 +1433,9 @@ class BootAnimWidget(QWidget):
         super().closeEvent(ev)
 
 
+BootAnimCreator = BootAnimWidget
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    w = BootAnimWidget()
-    w.show()
+    w = run_bootanim_creator()
     sys.exit(app.exec())
