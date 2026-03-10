@@ -152,9 +152,13 @@ QuickADB has 4 Qt stylesheets included. Simply click the "About" button on the b
 If you're building from source, you can add as much .qss themes in the themes/ directory as you want.
 
 **Dark** - Default theme of QuickADB. Uses a dark navy color palette along with light blue accents.
+
 **High Contrast** - Darker version of the main theme.
+
 **Light** - Modern, elegant white theme.
+
 **Android** - Dark gray color palette with the classic Android green for the accents.
+
 **Default** - Resets widget styles, forcing them to inherit the OS' design language instead.
 
 
