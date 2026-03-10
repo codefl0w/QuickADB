@@ -140,7 +140,7 @@ A custom terminal with autocomplete support. Search for keywords in output, expo
 
 Features that require root access are marked with a `#` icon within the application. No root is required for standard ADB and Fastboot operations.
 
-For root operations to work, you must grant root access to com.android.shell on device.
+For root operations to work, you must grant root access to com.android.shell on your device.
 
 ---
 
