@@ -24,7 +24,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 import threading
 
 
-class CommandRunner(QThread): # Only for the file explorer at the time. Could be implemented for the rest of the submodules
+class CommandRunner(QThread): 
     """
     Runs shell commands in a separate thread to avoid blocking the GUI.
     Streams stdout and stderr in real-time.
@@ -134,7 +134,6 @@ class DeviceInfoWorker(QThread):
     def _get_device_commands(self):
         adb_cmd = f'"{self.adb_path}"'
         return {
-
             "Fingerprint": f"{adb_cmd} shell getprop ro.build.fingerprint",
             "Board": f"{adb_cmd} shell getprop ro.product.board",
             "Build ID": f"{adb_cmd} shell getprop ro.build.id",
@@ -397,6 +396,157 @@ class UninstallAppDialog(QDialog):
             QMessageBox.critical(self, "Error", "Command execution method not found.")
 
 
+class ADBPushDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_app = parent
+        self._setup_ui()
+
+    def _setup_ui(self):
+        self.setWindowTitle("ADB Push File")
+        self.setFixedSize(450, 200)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        self.setModal(True)
+
+        layout = QVBoxLayout()
+
+        # Source file selection
+        layout.addWidget(QLabel("Select file to push to device:"))
+        source_layout = QHBoxLayout()
+        self.source_path_entry = QLineEdit()
+        self.source_path_entry.setPlaceholderText("Select or enter local file path...")
+        source_layout.addWidget(self.source_path_entry)
+
+        browse_source_btn = QPushButton("Browse")
+        browse_source_btn.setFixedWidth(80)
+        browse_source_btn.clicked.connect(self._browse_source_file)
+        source_layout.addWidget(browse_source_btn)
+        layout.addLayout(source_layout)
+
+        # Destination path on device
+        layout.addWidget(QLabel("Enter destination path on device (e.g., /sdcard/Download/):"))
+        self.destination_path_entry = QLineEdit()
+        self.destination_path_entry.setPlaceholderText("/sdcard/Download/")
+        self.destination_path_entry.returnPressed.connect(self._push_file)
+        layout.addWidget(self.destination_path_entry)
+
+        # Push button
+        push_btn = QPushButton("Push File")
+        push_btn.clicked.connect(self._push_file)
+        push_btn.setDefault(True)
+        layout.addWidget(push_btn)
+
+        self.setLayout(layout)
+        self.source_path_entry.setFocus()
+
+    def _browse_source_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select File to Push", "", "All Files (*)"
+        )
+        if file_path:
+            self.source_path_entry.setText(file_path)
+
+    def _push_file(self):
+        source_path = self.source_path_entry.text().strip()
+        destination_path = self.destination_path_entry.text().strip()
+
+        if not source_path:
+            QMessageBox.warning(self, "No Source File", "Please select or enter a local file path.")
+            return
+        if not os.path.exists(source_path):
+            QMessageBox.warning(self, "Invalid Source Path", "The specified source file does not exist.")
+            return
+        if not destination_path:
+            QMessageBox.warning(self, "No Destination Path", "Please enter a destination path on the device.")
+            return
+
+        if hasattr(self.parent_app, 'run_command_async'):
+            self.parent_app.run_command_async(
+                f'adb push "{source_path}" "{destination_path}"',
+                f"Pushing {os.path.basename(source_path)} to {destination_path}",
+                "ADB"
+            )
+            self.accept()
+        else:
+            QMessageBox.critical(self, "Error", "Command execution method not found.")
+
+
+class ADBPullDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_app = parent
+        self._setup_ui()
+
+    def _setup_ui(self):
+        self.setWindowTitle("ADB Pull File")
+        self.setFixedSize(450, 200)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        self.setModal(True)
+
+        layout = QVBoxLayout()
+
+        # Source path on device
+        layout.addWidget(QLabel("Enter source path on device (e.g., /sdcard/Download/file.txt):"))
+        self.source_path_entry = QLineEdit()
+        self.source_path_entry.setPlaceholderText("/sdcard/Download/file.txt")
+        layout.addWidget(self.source_path_entry)
+
+        # Destination folder selection
+        layout.addWidget(QLabel("Select local destination folder:"))
+        destination_layout = QHBoxLayout()
+        self.destination_folder_entry = QLineEdit()
+        self.destination_folder_entry.setPlaceholderText("Select or enter local folder path...")
+        destination_layout.addWidget(self.destination_folder_entry)
+
+        browse_dest_btn = QPushButton("Browse")
+        browse_dest_btn.setFixedWidth(80)
+        browse_dest_btn.clicked.connect(self._browse_destination_folder)
+        destination_layout.addWidget(browse_dest_btn)
+        layout.addLayout(destination_layout)
+
+        # Pull button
+        pull_btn = QPushButton("Pull File")
+        pull_btn.clicked.connect(self._pull_file)
+        pull_btn.setDefault(True)
+        layout.addWidget(pull_btn)
+
+        self.setLayout(layout)
+        self.source_path_entry.setFocus()
+
+    def _browse_destination_folder(self):
+        folder_path = QFileDialog.getExistingDirectory(
+            self, "Select Destination Folder", ""
+        )
+        if folder_path:
+            self.destination_folder_entry.setText(folder_path)
+
+    def _pull_file(self):
+        source_path = self.source_path_entry.text().strip()
+        destination_folder = self.destination_folder_entry.text().strip()
+
+        if not source_path:
+            QMessageBox.warning(self, "No Source Path", "Please enter a source path on the device.")
+            return
+        if not destination_folder:
+            QMessageBox.warning(self, "No Destination Folder", "Please select or enter a local destination folder.")
+            return
+        if not os.path.exists(destination_folder):
+            QMessageBox.warning(self, "Invalid Destination Folder", "The specified destination folder does not exist.")
+            return
+        if not os.path.isdir(destination_folder):
+            QMessageBox.warning(self, "Invalid Destination Folder", "The specified path is not a directory.")
+            return
+
+        if hasattr(self.parent_app, 'run_command_async'):
+            self.parent_app.run_command_async(
+                f'adb pull "{source_path}" "{destination_folder}"',
+                f"Pulling {os.path.basename(source_path)} to {destination_folder}",
+                "ADB"
+            )
+            self.accept()
+        else:
+            QMessageBox.critical(self, "Error", "Command execution method not found.")
+
 
 # Extension methods for the main application class
 def show_device_info(self):
@@ -443,6 +593,19 @@ def show_uninstall_app_ui(self):
     dialog.exec()
 
 
+def show_adb_push_ui(self):
+    # Show ADB Push dialog
+    dialog = ADBPushDialog(self)
+    dialog.exec()
+
+
+def show_adb_pull_ui(self):
+    # Show ADB Pull dialog
+    dialog = ADBPullDialog(self)
+    dialog.exec()
+
+
+
 def add_methods_to_class(instance):
     # Bind methods to the instance
     instance.sideload_file = sideload_file.__get__(instance)
@@ -450,6 +613,8 @@ def add_methods_to_class(instance):
     instance.show_device_info = show_device_info.__get__(instance)
     instance.install_apk = show_install_apk_ui.__get__(instance)
     instance.uninstall_app = show_uninstall_app_ui.__get__(instance)
+    instance.open_push_window = show_adb_push_ui.__get__(instance)
+    instance.open_pull_window = show_adb_pull_ui.__get__(instance)
     
     return instance
 

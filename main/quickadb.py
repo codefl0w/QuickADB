@@ -391,8 +391,6 @@ class QuickADBApp(QMainWindow):
         )
 
     # --- Placeholder Methods. Filled in by adbfunc.py ---
-    def open_pull_window(self): QMessageBox.information(self, "Not Implemented", "ADB Pull feature coming soon.")
-    def open_push_window(self): QMessageBox.information(self, "Not Implemented", "ADB Push feature coming soon.")
     def install_apk(self): QMessageBox.information(self, "Not Implemented", "Install APK feature coming soon.")
     def uninstall_app(self): QMessageBox.information(self, "Not Implemented", "Uninstall App feature coming soon.")
     def sideload_file(self): QMessageBox.information(self, "Not Implemented", "ADB Sideload feature coming soon.")
