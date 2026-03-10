@@ -26,3 +26,8 @@ var/
 wheels/
 *.egg
 
+# --- OS-specific installations ---
+platform-tools/
+util/payload-dumper-go.exe
+util/payload-dumper-go
+

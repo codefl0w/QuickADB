@@ -1,0 +1,203 @@
+/* Palette:
+   main_bg:       #121212
+   secondary_bg:  #1e1e1e
+   tertiary_bg:   #2c2c2c
+   misc:          #383838
+   hover:         #383838
+   accent:        #32de84
+   text:          #ffffff
+   secondary_txt: #b0b0b0
+   quickadb_log_primary:   #ffffff
+   quickadb_log_secondary: #b0b0b0
+   button_txt:    #ffffff
+   quickadb_is_dark: true
+*/
+QMainWindow, QWidget {
+    background-color: #121212;
+    color: #ffffff;
+}
+QFrame {
+    background-color: #1e1e1e;
+    border-radius: 6px;
+}
+QLabel {
+    color: #ffffff;
+    background-color: transparent;
+}
+QPushButton {
+    background-color: #2c2c2c;
+    color: #ffffff;
+    border-radius: 6px;
+    border: 1px solid #383838;
+    padding: 5px 10px;
+}
+QPushButton:hover {
+    background-color: #383838;
+}
+QPushButton:pressed {
+    background-color: #32de84;
+    color: #000000;
+}
+QPushButton:disabled {
+    background-color: #252525;
+    color: #b0b0b0;
+}
+QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: #2c2c2c;
+    color: #ffffff;
+    border: 1px solid #383838;
+    border-radius: 6px;
+    padding: 5px;
+}
+QTreeView {
+    background-color: #1e1e1e;
+    alternate-background-color: #2c2c2c;
+    color: #ffffff;
+    border: 1px solid #2c2c2c;
+    border-radius: 6px;
+    selection-background-color: #32de84;
+    selection-color: #000000;
+    padding: 3px;
+}
+QTreeView::item {
+    padding: 3px;
+}
+QTreeView::item:selected {
+    background-color: #32de84;
+    color: #000000;
+}
+QHeaderView, QHeaderView::section {
+    background-color: #1e1e1e;
+    color: #ffffff;
+    border: 1px solid #383838;
+    padding: 4px;
+}
+QTableWidget {
+    gridline-color: #383838;
+    background-color: #1e1e1e;
+    color: #ffffff;
+    selection-background-color: #383838;
+    selection-color: #ffffff;
+}
+QTableCornerButton::section {
+    background-color: transparent;
+    border: none;
+}
+QScrollArea {
+    background-color: transparent;
+    border: none;
+}
+QScrollBar:vertical {
+    background: #1e1e1e;
+    width: 10px;
+}
+QScrollBar::handle:vertical {
+    background: #383838;
+    min-height: 20px;
+    border-radius: 5px;
+    border: 1px solid #121212;
+}
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: #121212;
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+QComboBox {
+    background-color: #2c2c2c;
+    color: #ffffff;
+    border-radius: 6px;
+    padding: 5px;
+}
+QComboBox::drop-down {
+    border: none;
+    background-color: #383838;
+}
+QProgressBar {
+    border: 1px solid #383838;
+    border-radius: 4px;
+    text-align: center;
+    background-color: #1e1e1e;
+}
+QProgressBar::chunk {
+    background-color: #32de84;
+    width: 10px;
+    margin: 1px;
+    border-radius: 3px;
+}
+QSplitter::handle {
+    background-color: #2c2c2c;
+    height: 1px;
+}
+QToolBar {
+    background-color: #1e1e1e;
+    spacing: 5px;
+    border: none;
+}
+QStatusBar {
+    background-color: #1e1e1e;
+    color: #ffffff;
+}
+QMessageBox, QFileDialog {
+    background-color: #121212;
+    color: #ffffff;
+}
+QMessageBox QLabel {
+    background: transparent;
+    color: #ffffff;
+}
+QMessageBox QPushButton {
+    min-width: 80px;
+}
+QCheckBox {
+    background-color: #2c2c2c;
+    color: #ffffff;
+    border-radius: 6px;
+    border: 1px solid #383838;
+    padding: 4px 20px;
+}
+QDialog {
+    background-color: #121212;
+    color: #ffffff;
+}
+QDialog QTextEdit {
+    background-color: #2c2c2c;
+    color: #ffffff;
+    border: 1px solid #121212;
+    border-radius: 6px;
+}
+QDialog QPushButton {
+    background-color: #2c2c2c;
+    color: #ffffff;
+    border-radius: 6px;
+    border: 1px solid #383838;
+    padding: 5px 10px;
+    min-width: 80px;
+}
+QDialog QPushButton:hover {
+    background-color: #383838;
+}
+QDialog QPushButton:pressed {
+    background-color: #32de84;
+    color: #000000;
+}
+QProgressDialog {
+    background-color: #121212;
+    color: #ffffff;
+    border: 1px solid #2c2c2c;
+    border-radius: 8px;
+}
+QProgressDialog QLabel {
+    color: #ffffff;
+    padding: 10px;
+    font-size: 13px;
+}
+/* Scoped overrides */
+QWidget#TBspacer {
+    background-color: #1e1e1e;
+}
+QLineEdit#PathBar, QLineEdit#SearchBar {
+    background-color: #2c2c2c;
+}
