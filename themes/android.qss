@@ -1,3 +1,5 @@
+
+
 /* Palette:
    main_bg:       #121212
    secondary_bg:  #1e1e1e
@@ -10,7 +12,7 @@
    quickadb_log_primary:   #ffffff
    quickadb_log_secondary: #b0b0b0
    button_txt:    #ffffff
-   quickadb_is_dark: true
+
 */
 QMainWindow, QWidget {
     background-color: #121212;

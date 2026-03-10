@@ -214,10 +214,21 @@ class QuickADBApp(QMainWindow):
         current_time = time.strftime("%H:%M:%S")
         self.log_action(f"[{current_time}] Executing {command_type} command: {description}", "#00ffff")
 
+        # Resolve adb/fastboot to absolute paths
+        command_stripped = (command or "").lstrip()
+        for tool in ("adb", "fastboot"):
+            if command_stripped == tool or command_stripped.startswith(tool + " "):
+                exe_path = self._get_executable_path(tool)
+                if exe_path:
+                    # Replace tool command with its absolute path properly quoted
+                    command = f'"{exe_path}"{command_stripped[len(tool):]}'
+                break
+
         self.command_runner = CommandRunner(command, self.platform_tools_path)
         self.command_runner.env = get_clean_env()
         self.command_runner.output_signal.connect(self.log_terminal_output)
         self.command_runner.start()
+
 
     def _populate_commands_grid(self, commands: List[Tuple[str, Callable]], items_per_row: int = 3):
         """Dynamically creates and places command buttons in a grid."""
@@ -586,7 +597,7 @@ class QuickADBApp(QMainWindow):
             theme_name = ThemeManager.read_theme_name().strip().lower()
         except Exception:
             theme_name = "dark.qss"
-        dark_themes = {"dark.qss", "high_contrast.qss"}
+        dark_themes = {"dark.qss", "high_contrast.qss", "android.qss"}
         logo_name = "logo.svg" if theme_name in dark_themes else "logo_light.svg"
         svg_path = resource_path(os.path.join("res", logo_name))
         if not os.path.exists(svg_path):
