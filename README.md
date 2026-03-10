@@ -1,3 +1,4 @@
+
 <img width="500" height="125" alt="QuickADB Logo" src="https://github.com/user-attachments/assets/2531e507-63f1-4b23-b48e-ad4edd99d6d9" />
 
 A powerful GUI wrapper for ADB and Fastboot, built for Android developers and power users. Focused on reliability and speed, it provides one-click flows for common device tasks while keeping advanced tools available for power users.
@@ -22,6 +23,7 @@ A powerful GUI wrapper for ADB and Fastboot, built for Android developers and po
 - [Usage](#usage)
 - [Features](#features)
 - [Giving Root Permissions](#giving-root-permissions)
+- [Changing Themes](#changing-themes)
 - [Changelog](#changelog)
 - [Contributing](#contributing)
 - [Donate](#donate)
@@ -43,9 +45,9 @@ QuickADB is a portable GUI wrapper for ADB and Fastboot that eliminates the need
 ## Screenshots
 
 
-<img width="2000" height="1500" alt="showcase" src="https://github.com/user-attachments/assets/59841fd7-ec8f-4618-a31d-a9a196a38ed1" />
+<img width="2000" height="1500" alt="showcase_new" src="https://github.com/user-attachments/assets/ccd37739-98bd-40eb-86c7-f60b460d57c1" />
 
-
+(Single-picture showcase of almost every UI window of QuickADB.)
 
 ---
 
@@ -144,6 +146,20 @@ For root operations to work, you must grant root access to com.android.shell on 
 
 ---
 
+## Changing themes
+
+QuickADB has 4 Qt stylesheets included. Simply click the "About" button on the bottom left corner and change your theme.
+If you're building from source, you can add as much .qss themes in the themes/ directory as you want.
+
+**Dark** - Default theme of QuickADB. Uses a dark navy color palette along with light blue accents.
+**High Contrast** - Darker version of the main theme.
+**Light** - Modern, elegant white theme.
+**Android** - Dark gray color palette with the classic Android green for the accents.
+**Default** - Resets widget styles, forcing them to inherit the OS' design language instead.
+
+
+---
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.
@@ -184,8 +200,6 @@ If QuickADB has been useful to you, please consider supporting its development v
 <a href="https://buymeacoffee.com/fl0w" target="_blank" rel="noopener noreferrer">
   <img width="350" alt="yellow-button" src="https://github.com/user-attachments/assets/2e6d44c8-9640-4cb3-bcc8-989595d6b7e9"/>
 </a>
-
-
 
 ---
 
