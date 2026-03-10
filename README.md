@@ -6,7 +6,7 @@ A powerful GUI wrapper for ADB and Fastboot, built for Android developers and po
 
 ![Downloads](https://codefl0w.xyz/gh-boards/out/codefl0w/badge/QuickADB/badge_downloads_2.svg)
 ![Stars](https://codefl0w.xyz/gh-boards/out/codefl0w/badge/QuickADB/badge_stars_2.svg)
-![Platform](https://codefl0w.xyz/gh-boards/out/codefl0w/profile/badge_custom.svg)
+[![Platform](https://codefl0w.xyz/gh-boards/out/codefl0w/profile/badge_custom.svg)](#platform-support)
 [![License](https://codefl0w.xyz/gh-boards/out/codefl0w/badge/QuickADB/badge_license_2.svg)](LICENSE)
 ![Workflow](https://codefl0w.xyz/gh-boards/out/codefl0w/badge/QuickADB/badge_workflow_2_latest.svg)
 
