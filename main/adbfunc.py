@@ -105,7 +105,15 @@ class DeviceInfoWorker(QThread):
     def run(self):
         commands = self._get_device_commands()
         results = []
-        
+
+        # Windows specific: Create a new process group and hide the console window.
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = (
+                subprocess.CREATE_NEW_PROCESS_GROUP |
+                subprocess.CREATE_NO_WINDOW
+            )
+
         for label, command in commands.items():
             try:
                 result = subprocess.run(
@@ -114,7 +122,8 @@ class DeviceInfoWorker(QThread):
                     stderr=subprocess.PIPE, 
                     text=True, 
                     shell=True,
-                    timeout=10
+                    timeout=10,
+                    creationflags=creationflags
                 )
                 
                 if result.returncode == 0:

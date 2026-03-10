@@ -5,6 +5,7 @@ on:
   push:
     tags:
       - 'v*'
+      - 'V*'
 
 permissions:
   contents: write
@@ -51,7 +52,7 @@ jobs:
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
     runs-on: ubuntu-latest
 
     steps:

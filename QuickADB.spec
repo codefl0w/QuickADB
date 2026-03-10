@@ -36,7 +36,7 @@ a = Analysis(
 
 # Linux compatibility: Exclude libraries that often cause "symbol lookup error" on newer distros (like Arch)
 # when the app is built on an older distro.
-# The CI workflow builds on Ubuntu 20.04. A bit old, but usually helps with compatibility.
+# The CI workflow builds on Ubuntu 22.04. A bit old, but usually helps with compatibility.
 if sys.platform == 'linux':
     excluded_binaries = ['libreadline.so.8', 'libcrypt.so.1', 'libz.so.1', 'libgcc_s.so.1']
     a.binaries = [x for x in a.binaries if x[0] not in excluded_binaries]

@@ -966,7 +966,7 @@ class BootAnimWidget(QWidget):
         self.build_sequence_from_flat_frames(frames_dir, which="created")
         if getattr(self, "seq_created", None):
             self.start_created()
-            self.log("[INFO] Preview playing.")
+
         else:
             self.log("[WARN] No frames loaded for preview after extraction.")
             QMessageBox.information(self, "Preview", "No frames were loaded for preview. See log for details.")

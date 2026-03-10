@@ -470,8 +470,25 @@ class TerminalWindow(QMainWindow):
                     f.write("stty -echo 2>/dev/null || true\n")
                 launch_cmd = [shell, "--rcfile", self.custom_rc_path]
             elif self.system == "Darwin":
-                launch_cmd = ["/bin/zsh", "-i"]
+                shell = shutil.which("zsh") or shutil.which("bash") or shutil.which("sh")
+                if not shell:
+                    self.log_output("No shell found on macOS system.\n")
+                    return
                 encoding = "utf-8"
+                if "zsh" in os.path.basename(shell):
+                    # Create a minimal zshrc to keep the embedded terminal clean
+                    zdotdir = os.path.join(tempfile.gettempdir(), f"quickadb_zdot_{os.getpid()}")
+                    os.makedirs(zdotdir, exist_ok=True)
+                    zshrc_path = os.path.join(zdotdir, ".zshrc")
+                    with open(zshrc_path, "w", encoding="utf-8") as f:
+                        f.write("# Custom QuickADB zshrc\nexport PS1='$ '\n")
+                    self.custom_rc_path = zshrc_path
+                    launch_cmd = [shell, "-i"]
+                else:
+                    self.custom_rc_path = os.path.join(tempfile.gettempdir(), f"quickadb_rc_{os.getpid()}")
+                    with open(self.custom_rc_path, "w", encoding="utf-8") as f:
+                        f.write("# Custom QuickADB RC\nexport PS1='$ '\nstty -echo 2>/dev/null || true\n")
+                    launch_cmd = [shell, "--rcfile", self.custom_rc_path]
             else:
                 self.log_output("Unsupported OS for terminal.\n")
                 return
@@ -483,6 +500,9 @@ class TerminalWindow(QMainWindow):
                 env['PYTHONUNBUFFERED'] = '1'
                 current_path = env.get('PATH', '')
                 env['PATH'] = f".:{self.platform_tools_path}:{current_path}"
+                # For macOS zsh: point ZDOTDIR to our custom directory
+                if self.system == "Darwin" and self.custom_rc_path:
+                    env['ZDOTDIR'] = os.path.dirname(self.custom_rc_path)
 
             creationflags = 0
             startupinfo = None

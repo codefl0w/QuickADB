@@ -65,9 +65,17 @@ class DeviceScannerWorker(QThread):
         self.log_msg.emit("[INFO] Starting device scan...")
 
         try:
+            # Windows specific: Create a new process group and hide the console window.
+            creationflags = 0
+            if os.name == "nt":
+                creationflags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP |
+                    subprocess.CREATE_NO_WINDOW
+                )
+
             # 1. Check ADB
             adb_proc = subprocess.run([adb_cmd, "devices"], 
-                                      capture_output=True, text=True, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                                      capture_output=True, text=True, creationflags=creationflags)
             adb_devs = []
             for line in adb_proc.stdout.splitlines()[1:]:
                 parts = line.split()
@@ -76,7 +84,7 @@ class DeviceScannerWorker(QThread):
 
             # 2. Check Fastboot
             fastboot_proc = subprocess.run([fastboot_cmd, "devices"], 
-                                           capture_output=True, text=True, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                                           capture_output=True, text=True, creationflags=creationflags)
             fb_devs = []
             for line in fastboot_proc.stdout.splitlines():
                 parts = line.split()
