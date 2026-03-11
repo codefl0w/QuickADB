@@ -56,7 +56,7 @@ class QuickADBApp(QMainWindow):
     BUTTON_WIDTH = 150
     BUTTON_HEIGHT = 40
     GITHUB_URL = "https://github.com/codefl0w/QuickADB"
-    XDA_URL = "https://xdaforums.com/t/tool-quickadb-a-gui-to-execute-adb-fastboot-commands.4690673/"
+    XDA_URL = "https://xdaforums.com/t/new-quickadb-v4-adb-app-manager-file-explorer-gsi-flasher-and-more.4781847/"
     DONATE_URL = "https://buymeacoffee.com/fl0w" # please?
     CONTACT_EMAIL = "mailto:fl0w_dev@protonmail.com"
 
@@ -632,3 +632,4 @@ class QuickADBApp(QMainWindow):
             dialog.exec()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not load 'whatsnew.html':\n{e}")
+
