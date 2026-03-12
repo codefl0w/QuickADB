@@ -3,6 +3,17 @@ The changelog only includes what's new. To read feature descriptions, see [Featu
 
 For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md).
 
+# [4.0.1] - 13.03.2026
+
+### Added
+- Boot Animation Creator: Reload frames from workdir button
+
+### Changed
+- Boot Animation Creator: Frame handling logic
+
+### Fixed
+- Boot Animation Creator: FFmpeg PATH detection
+
 
 
 # [4.0.0] - 10.03.2026

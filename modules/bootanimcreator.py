@@ -281,7 +281,7 @@ def extract_video_frames_sync(video_path: str, width: int, height: int, ffmpeg_p
         ffmpeg_bin = shutil.which(ff) or shutil.which("ffmpeg")
     if not ffmpeg_bin:
         raise FileNotFoundError("ffmpeg not found")
-    out_dir = tempfile.mkdtemp(prefix="bootanim_vid_")
+    out_dir = tempfile.mkdtemp(prefix="bootanim_vid_", dir=WORK_DIR)
     out_pattern = os.path.join(out_dir, "%09d.png")
     args = [ffmpeg_bin, "-y", "-i", video_path]
     # force FPS if provided
@@ -314,7 +314,7 @@ def extract_gif_frames_sync(gif_path: str, width: int, height: int, fps: Optiona
     """
     if not os.path.isfile(gif_path):
         raise FileNotFoundError("GIF file missing")
-    out_dir = tempfile.mkdtemp(prefix="bootanim_gif_")
+    out_dir = tempfile.mkdtemp(prefix="bootanim_gif_", dir=WORK_DIR)
     im = Image.open(gif_path)
     i = 0
     for frame in ImageSequence.Iterator(im):
@@ -614,8 +614,8 @@ class BootAnimWidget(QWidget):
         ff_grp.setLayout(ff_layout)
         left_col.addWidget(ff_grp)
 
-        # Created/Backup Paths section (3x2 grid: Create, Backup, 4 reserved)
-        created_grp = QGroupBox("Created / Backup Actions (placeholders)")
+        # Created/Backup Paths section (4x2 grid)
+        created_grp = QGroupBox("Created / Backup Actions")
         created_layout = QGridLayout()
 
         # Create button
@@ -630,9 +630,11 @@ class BootAnimWidget(QWidget):
         self.push_zip_btn = QPushButton("Push bootanimation.zip to device")
         self.push_zip_btn.clicked.connect(self.push_zip_flow)
 
-        # reserved placeholder buttons (future features)
-        self.reserved_btn1 = QPushButton("Create Flashable Module")
-        self.reserved_btn1.clicked.connect(self.create_flashable_module_flow)
+        self.create_module_btn = QPushButton("Create Flashable Module")
+        self.create_module_btn.clicked.connect(self.create_flashable_module_flow)
+        
+        self.reload_btn = QPushButton("Reload Frames from Workdir")
+        self.reload_btn.clicked.connect(self.reload_frames_from_workdir)
         
         self.clear_btn = QPushButton("Clear Frames / Workdir")
         self.clear_btn.clicked.connect(self.clear_all_frames)
@@ -640,13 +642,14 @@ class BootAnimWidget(QWidget):
         self.workdir_btn = QPushButton("Open Work Directory")
         self.workdir_btn.clicked.connect(self.open_work_directory)
 
-        # Layout the 3x2 grid
+        # Layout the 4x2 grid
         created_layout.addWidget(self.create_zip_btn, 0, 0)
         created_layout.addWidget(self.backup_btn, 0, 1)
         created_layout.addWidget(self.push_zip_btn, 1, 0)
-        created_layout.addWidget(self.reserved_btn1, 1, 1)
-        created_layout.addWidget(self.clear_btn, 2, 0)
+        created_layout.addWidget(self.create_module_btn, 1, 1)
+        created_layout.addWidget(self.reload_btn, 2, 0)
         created_layout.addWidget(self.workdir_btn, 2, 1)
+        created_layout.addWidget(self.clear_btn, 3, 0)
 
         created_grp.setLayout(created_layout)
         left_col.addWidget(created_grp)
@@ -710,8 +713,8 @@ class BootAnimWidget(QWidget):
     def _startup_ffmpeg_check(self):
         path = shutil.which("ffmpeg")
         if path:
-            self.log(f"ffmpeg found in PATH: {path}")
-            self._check_ffmpeg_version(path)
+            self.log(f"ffmpeg found in PATH")
+            self._check_ffmpeg_version(path, silent=True)
         else:
             self.log("ffmpeg not found in PATH")
 
@@ -727,8 +730,9 @@ class BootAnimWidget(QWidget):
         if not p:
             QMessageBox.warning(self, "FFmpeg", "FFmpeg not set and not found in PATH.")
             return
-        self._check_ffmpeg_version(p)
+        self._check_ffmpeg_version(p, silent=False)
 
+    def _check_ffmpeg_version(self, p, silent=False):
         # Windows specific: Create a new process group and hide the console window.
         creationflags = 0
         if os.name == 'nt':
@@ -738,16 +742,17 @@ class BootAnimWidget(QWidget):
             )
 
         try:
-            proc = subprocess.run([path, "-version"], capture_output=True, text=True, timeout=6, creationflags=creationflags)
+            proc = subprocess.run([p, "-version"], capture_output=True, text=True, timeout=6, creationflags=creationflags)
             out = proc.stdout or proc.stderr or ""
             first = out.splitlines()[0] if out.splitlines() else out.strip()
             self.log(f"ffmpeg: {first}")
-            self.ffmpeg_resolved_path = path
-            self.ffmpeg_path = path
-            self.ffmpeg_edit.setText(path)
+            self.ffmpeg_resolved_path = p
+            self.ffmpeg_path = p
+            self.ffmpeg_edit.setText(p)
         except Exception as e:
             self.log(f"ffmpeg check failed: {e}")
-            QMessageBox.critical(self, "FFmpeg", f"ffmpeg check failed: {e}")
+            if not silent:
+                QMessageBox.critical(self, "FFmpeg", f"ffmpeg check failed: {e}")
 
     def _start_thread(self, t: QThread):
         self._threads.append(t)
@@ -899,6 +904,11 @@ class BootAnimWidget(QWidget):
     def _on_loader_done(self, seq, frame_ms):
         loader = self.sender()
         which = getattr(loader, "_which", "created")
+        if not seq:
+            self.log(f"[WARN] No frames loaded for outline ('{which}').")
+            QMessageBox.information(self, "Preview", "No frames were loaded for preview. See log for details.")
+            return
+
         self.log(f"[INFO] Loaded {len(seq)} frames for '{which}'.")
         
         if which == "current":
@@ -962,22 +972,18 @@ class BootAnimWidget(QWidget):
             return
         frames_dir = result
         self.log(f"[INFO] Frames extracted to: {frames_dir}")
-        # Build sequence from the flat frames (loads QPixmaps into RAM)
-        self.build_sequence_from_flat_frames(frames_dir, which="created")
-        if getattr(self, "seq_created", None):
-            self.start_created()
 
-        else:
-            self.log("[WARN] No frames loaded for preview after extraction.")
-            QMessageBox.information(self, "Preview", "No frames were loaded for preview. See log for details.")
-        # Now cleanup extracted frames on disk (we kept frames in memory)
-        try:
-            shutil.rmtree(frames_dir)
-            self.log(f"[INFO] Cleaned temp frames folder: {frames_dir}")
-        except Exception as e:
-            self.log(f"[WARN] Failed deleting temp frames: {e}")
-        # clear last frames dir reference
-        self._last_created_frames_dir = None
+        # Clean up any previously created frames dir to save space
+        if self._last_created_frames_dir and os.path.isdir(self._last_created_frames_dir):
+            try:
+                shutil.rmtree(self._last_created_frames_dir)
+            except Exception as e:
+                self.log(f"[WARN] Failed deleting old temp frames: {e}")
+        self._last_created_frames_dir = frames_dir
+
+        # Build sequence from the flat frames (loads QPixmaps into RAM)
+        # _on_loader_done will start playback when done
+        self.build_sequence_from_flat_frames(frames_dir, which="created")
 
     def build_sequence_from_flat_frames(self, frames_dir: str, which: str = "created"):
         if not os.path.isdir(frames_dir):
@@ -1375,11 +1381,25 @@ class BootAnimWidget(QWidget):
             self._start(which)
 
     def open_work_directory(self):
-        if WORK_DIR and os.path.exists(WORK_DIR):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(WORK_DIR)))
-            self.log(f"[INFO] Opening work directory: {WORK_DIR}")
+        frames_dir = self._detect_created_frames_dir()
+        if frames_dir and os.path.exists(frames_dir):
+            target = frames_dir
+        elif WORK_DIR and os.path.exists(WORK_DIR):
+            target = WORK_DIR
         else:
             self.log("[WARN] Work directory not found.")
+            return
+            
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(target)))
+        self.log(f"[INFO] Opening directory: {target}")
+
+    def reload_frames_from_workdir(self):
+        frames_dir = self._detect_created_frames_dir()
+        if not frames_dir or not os.path.isdir(frames_dir):
+            QMessageBox.warning(self, "No frames", "No extracted frames directory found to reload from.")
+            return
+        self.log(f"[INFO] Reloading frames from: {frames_dir}")
+        self.build_sequence_from_flat_frames(frames_dir, which="created")
 
     def clear_all_frames(self):
         reply = QMessageBox.question(self, "Clear All?", "This will delete all extracted frames in the temporary work directory and clear previews.\n\nProceed?",
