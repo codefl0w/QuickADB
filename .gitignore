@@ -6,7 +6,7 @@ dist/
 
 # --- Python Compiled Files ---
 # Byte-compiled / optimized / DLL files
-__pycache__/
+__pycache__
 *.py[cod]
 *$py.class
 *.so
@@ -31,3 +31,5 @@ platform-tools/
 util/payload-dumper-go.exe
 util/payload-dumper-go
 
+# --- Temporary files ---
+bootanim_backups
