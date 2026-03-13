@@ -34,7 +34,7 @@ sudo dnf install ffmpeg
 sudo zypper install ffmpeg
 ```
 
-**MacOS:**
+**macOS:**
 ```
 brew install ffmpeg
 ```
@@ -45,6 +45,6 @@ brew install ffmpeg
 Find an FFmpeg build for your platform and download it. Many sources are available, so it may take a while to find a suitable one.
 
 For Windows and Linux, [BtbN's automated builds](https://github.com/BtbN/FFmpeg-Builds) can help.
-For MacOS, pre-built binaries are available at [evermeet.cx](https://evermeet.cx/ffmpeg/).
+For macOS, pre-built binaries are available at [evermeet.cx](https://evermeet.cx/ffmpeg/).
 
-After downloading, unzip the archive and point QuickADB to the FFmpeg binary located at `bin/ffmpeg` (Linux/MacOS) or `bin/ffmpeg.exe` (Windows). If the binary is valid, QuickADB will automatically log its version string.
+After downloading, unzip the archive and point QuickADB to the FFmpeg binary located at `bin/ffmpeg` (Linux/macOS) or `bin/ffmpeg.exe` (Windows). If the binary is valid, QuickADB will automatically log its version string.
