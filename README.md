@@ -57,7 +57,7 @@ QuickADB is a portable GUI wrapper for ADB and Fastboot that eliminates the need
 |----------|--------------------|----------------------------------------------------------------------------------|
 | Windows  | Yes                | Primary target                                                                   |
 | Linux    | Yes                | Some libs may mismatch with your distro and cause issues. If so, create an issue |
-| MacOS    | Experimental       | Darwin systems are supported but untested. Testing and feedback required         |
+| macOS    | Experimental       | Darwin systems are supported but untested. Testing and feedback required         |
 
 The latest source is built into executables for all three platforms.
 
@@ -126,7 +126,7 @@ A custom terminal with autocomplete support. Search for keywords in output, expo
 
 - **ADB App Manager** - Browse all installed apps. Uninstall, disable, view details, modify permissions, backup and restore APKs, and create or apply debloat presets.
 - **ADB File Explorer** - Browse the full device filesystem. Create, rename, delete, copy, paste, pull and push files, manage `chmod` permissions, preview images, edit text files, execute shell scripts, and manage root directories.
-- **GSI Flasher** — Detects device state and automatically flashes a GSI ROM, removing unneeded dynamic partitions on demand, without requiring a single manual command.
+- **GSI Flasher** - Detects device state and automatically flashes a GSI ROM, removing unneeded dynamic partitions on demand, without requiring a single manual command.
 - **Partition Manager** - View device partitions, create backups, and flash partition images while the device is powered. _(Requires root)_
 - **Super.img Dumper** - Extract individual partitions from a `super.img` file. Powered by [unsuper](https://github.com/codefl0w/unsuper).
 - **Payload.bin Dumper** - Extract individual partitions from a `payload.bin` file. Powered by [ssut's payload-dumper-go](https://github.com/ssut/payload-dumper-go).
