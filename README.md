@@ -135,6 +135,8 @@ A custom terminal with autocomplete support. Search for keywords in output, expo
 
 - **Device Specifications** - View RAM, storage, Android version, root method, and more at a glance.
 - **Boot Animation Creator** - View, back up, and modify your boot animation. Create a new animation from a GIF or video and flash it, or package it as a Magisk module.
+> [!NOTE]
+> Boot animation creator requires FFmpeg to run. Please see [FFmpeg.md](https://github.com/codefl0w/QuickADB/blob/main/FFmpeg.md).
 
 ---
 
