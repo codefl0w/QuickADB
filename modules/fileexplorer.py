@@ -129,7 +129,7 @@ class TransferRunner(QThread):
 
 class ADBFileExplorer(QMainWindow):
     # Constants for viewable file types
-    VIEWABLE_TEXT_EXTENSIONS = ("txt", "log", "json", "xml", "html", "csv", "md", "ini", "conf", "prop", "sh")
+    VIEWABLE_TEXT_EXTENSIONS = ("txt", "log", "json", "xml", "html", "csv", "md", "ini", "conf", "prop", "sh", "bat", "py", "js", "css", "html", "cpp", "h", "hpp", "c", "h", "rc")
     VIEWABLE_IMAGE_EXTENSIONS = ("png", "jpg", "jpeg", "gif", "bmp")
 
     def __init__(self):
@@ -343,8 +343,11 @@ class ADBFileExplorer(QMainWindow):
         self.table = QTableWidget()
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(["Name", "Type", "Size", "Modified"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)

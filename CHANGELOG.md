@@ -3,6 +3,23 @@ The changelog only includes what's new. To read feature descriptions, see [Featu
 
 For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md).
 
+
+
+
+# [4.0.2] - 14.03.2026
+
+### Added
+- Wireless ADB: Pairing via QR or pairing code
+
+### Changed
+- Wireless ADB: Moved function from adbfunc.py to wirelessadb.py
+- File Explorer: Changed header scaling method
+
+### Improved
+- File Explorer: Added many new viewable text file extensions
+
+
+
 # [4.0.1] - 13.03.2026
 
 ### Added

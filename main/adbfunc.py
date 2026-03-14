@@ -225,74 +225,7 @@ class DeviceInfoDialog(QDialog):
         self.worker.start()
 
 
-class WirelessADBDialog(QDialog):
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.parent_app = parent
-        self._setup_ui()
-
-    def _setup_ui(self):
-        self.setWindowTitle("Wireless ADB Connection")
-        self.setFixedSize(350, 120)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-        self.setModal(True)
-
-        layout = QVBoxLayout()
-
-        # Instructions
-        label = QLabel("Enter Device Address (HOST:PORT):")
-        layout.addWidget(label)
-
-        # Address input
-        self.address_entry = QLineEdit()
-        self.address_entry.setPlaceholderText("e.g., 192.168.1.100:5555")
-        self.address_entry.returnPressed.connect(self._connect_wireless_adb)
-        layout.addWidget(self.address_entry)
-
-        # Connect button
-        connect_button = QPushButton("Connect")
-        connect_button.clicked.connect(self._connect_wireless_adb)
-        connect_button.setDefault(True)
-        layout.addWidget(connect_button)
-
-        self.setLayout(layout)
-        self.address_entry.setFocus()
-
-    def _connect_wireless_adb(self):
-        address = self.address_entry.text().strip()
-        
-        if not self._validate_address(address):
-            QMessageBox.critical(self, "Error", 
-                               "Please enter a valid address (HOST:PORT).\n"
-                               "Example: 192.168.1.100:5555")
-            return
-
-        if hasattr(self.parent_app, 'run_command_async'):
-            self.parent_app.run_command_async(
-                f"adb connect {address}", 
-                f"Connecting to {address}", 
-                "ADB"
-            )
-            self.accept()
-        else:
-            QMessageBox.critical(self, "Error", 
-                               "Parent application method not found.")
-
-    def _validate_address(self, address):
-        if not address:
-            return False
-        
-        # Basic validation for HOST:PORT format
-        if ':' not in address:
-            return False
-            
-        try:
-            host, port = address.rsplit(':', 1)
-            port_num = int(port)
-            return len(host) > 0 and 1 <= port_num <= 65535
-        except ValueError:
-            return False
+# [Legacy WirelessADBDialog removed - now using modules.wirelessadb]
 
 class InstallAPKDialog(QDialog):
     def __init__(self, parent=None):
@@ -585,8 +518,13 @@ def sideload_file(self):
 
 
 def show_wireless_adb_ui(self):
-    # Show wireless ADB connection dialog
-    dialog = WirelessADBDialog(self)
+    import os
+    from modules.wirelessadb import WirelessADBDialog
+    # Show wireless ADB connection dialog (new QR pairing module)
+    # Passed parent and platform_tools_path dynamically since parent represents quickadb.py
+    adb_exe = "adb.exe" if os.name == 'nt' else "adb"
+    adb_path = os.path.join(self.platform_tools_path, adb_exe)
+    dialog = WirelessADBDialog(self, adb_path)
     dialog.exec()
 
 

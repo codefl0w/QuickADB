@@ -51,7 +51,7 @@ class QuickADBApp(QMainWindow):
     # Main window
 
     # Constants 
-    APP_VERSION = "V4.0.1"
+    APP_VERSION = "V4.0.2"
     APP_SUFFIX = "Full"
     BUTTON_WIDTH = 150
     BUTTON_HEIGHT = 40

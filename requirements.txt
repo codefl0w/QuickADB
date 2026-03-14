@@ -2,7 +2,9 @@ PyQt6>=6.6.0
 requests>=2.31.0
 Pillow>=10.0.0
 pyusb>=1.2.1
-numpy>=1.24.0
+numpy>=1.24.0 # Needed for unsuper
+qrcode>=7.4.2
+zeroconf>=0.131.0
 
 # Build/distribution helper (needed for build.py / QuickADB.spec workflow)
 pyinstaller>=6.0.0
