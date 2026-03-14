@@ -1,6 +1,7 @@
 
 # Why?
 Due to several ongoing builds being available, FFmpeg is not packaged into QuickADB as of V4. Thus, creating boot animations out of videos and rendering the current animation won't be possible unless you manually supply a working FFmpeg binary yourself.
+
 This could change in the future but is not guaranteed.
 
 # Getting FFmpeg
