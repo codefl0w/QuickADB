@@ -114,7 +114,7 @@ For wireless ADB, use the corresponding button in the ADB section of the tool.
 ## Features
 
 ### ADB
-Execute the most common ADB commands with a single click: reboot options, wireless ADB pairing, sideloading, and more.
+Execute the most common ADB commands with a single click: reboot options, wireless ADB pairing via QR or pairing code, sideloading, and more.
 
 ### Fastboot
 Execute the most common Fastboot commands with a single click: reboot options, fetching device variables, flashing images, and more.
