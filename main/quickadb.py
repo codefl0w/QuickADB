@@ -144,8 +144,8 @@ class QuickADBApp(QMainWindow):
         self.logs_text.setReadOnly(True)
         self.logs_text.setMinimumSize(200, 370)
         logs_layout.addWidget(self.logs_text)
-        self.extract_button = QPushButton("Extract Logs")
-        self.extract_button.clicked.connect(self.extract_logs)
+        self.extract_button = QPushButton("Export Logs")
+        self.extract_button.clicked.connect(self.export_logs)
         logs_layout.addWidget(self.extract_button, alignment=Qt.AlignmentFlag.AlignCenter)
         content_layout.addWidget(logs_frame)
 
@@ -526,7 +526,7 @@ class QuickADBApp(QMainWindow):
                               "Some features are experimental and are not expected to work on every device. "
                               "Look for the warning icon (⚠️) to distinguish them.\n")
 
-    def extract_logs(self):
+    def export_logs(self):
         file_path, _ = QFileDialog.getSaveFileName(self, "Save Logs", "", "Text Files (*.txt)")
         if file_path:
             with open(file_path, 'w', encoding='utf-8') as f:
