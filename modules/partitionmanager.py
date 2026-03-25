@@ -10,7 +10,9 @@ from util.thememanager import ThemeManager
 import sys
 import os
 
-from util.resource import get_root_dir, resource_path, resolve_platform_tool
+from util.resource import get_root_dir, resource_path
+from util.toolpaths import ToolPaths
+from util.devicemanager import DeviceManager
 root_dir = get_root_dir()
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
@@ -18,7 +20,6 @@ import subprocess
 import re
 import datetime
 import time
-import tempfile
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -26,6 +27,7 @@ from PyQt6.QtWidgets import (
     QProgressDialog, QTextEdit, QHeaderView, QStyledItemDelegate
 )
 from PyQt6.QtGui import QFont, QStandardItemModel, QStandardItem, QColor
+from util.devicemanager import DeviceManager
 
 class FormatSize:
     """Helper class to format file sizes in human-readable format."""
@@ -59,13 +61,15 @@ class PartitionLoadWorker(QThread):
         """Load partitions from the device."""
         try:
             self.log_message.emit("Loading and analyzing partitions from device...")
-            adb_exe = resolve_platform_tool(self.platform_tools_path, 'adb')
+            adb_exe = ToolPaths.instance().adb
+
+            serial = DeviceManager.instance().serial_args()
             
             # Use cat /proc/partitions for accurate sizes and ls -lL for name mapping.
             remote_script = "cat /proc/partitions; echo '---SEP---'; ls -lL /dev/block/by-name"
             
             command = [
-                adb_exe, 'shell', 'su', '-c', remote_script
+                adb_exe, *serial, 'shell', 'su', '-c', remote_script
             ]
             creationflags = 0
             if sys.platform == "win32":
@@ -166,7 +170,8 @@ class PartitionPullWorker(QThread):
         try:
             total_partitions = len(self.selected_partitions)
             successful_pulls = 0
-            adb_exe = resolve_platform_tool(self.platform_tools_path, 'adb')
+            adb_exe = ToolPaths.instance().adb
+            serial = DeviceManager.instance().serial_args()
             
             for i, partition_info in enumerate(self.selected_partitions):
                 partition_name = partition_info['name']
@@ -179,12 +184,10 @@ class PartitionPullWorker(QThread):
                 
                 target_path = f"/sdcard/{partition_name}.img"
                 dd_command = [
-                    adb_exe,
+                    adb_exe, *serial,
                     'shell', 'su', '-c',
                     f'dd if=/dev/block/by-name/{partition_name} of={target_path} bs=4M'
                 ]
-                
-                # Windows specific: Create a new process group and hide the console window.
                 creationflags = 0
                 if sys.platform == "win32":
                     creationflags = (
@@ -207,7 +210,7 @@ class PartitionPullWorker(QThread):
                 while process.poll() is None:
                     # Run ls -l to get the current file size
                     ls_command = [
-                        adb_exe,
+                        adb_exe, *serial,
                         'shell', 'su', '-c', f'ls -l {target_path}'
                     ]
                     ls_result = subprocess.run(ls_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)
@@ -248,7 +251,7 @@ class PartitionPullWorker(QThread):
                 self.log_message.emit(f"Pulling {partition_name} from device (may take a while)...")
                 
                 pull_command = [
-                    adb_exe,
+                    adb_exe, *serial,
                     'pull', target_path, self.save_dir
                 ]
                 result = subprocess.run(pull_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)
@@ -256,13 +259,13 @@ class PartitionPullWorker(QThread):
                 if result.returncode != 0:
                     self.log_message.emit(f"Failed to pull {partition_name}: {result.stderr.strip()}")
                     # Cleanup attempt
-                    subprocess.run([adb_exe, 'shell', 'su', '-c', f'rm {target_path}'], creationflags=creationflags)
+                    subprocess.run([adb_exe, *serial, 'shell', 'su', '-c', f'rm {target_path}'], creationflags=creationflags)
                     continue
                 
                 # Step 3: Remove the image from the device
                 self.log_message.emit(f"Cleaning up {partition_name} from device...")
                 rm_command = [
-                    adb_exe,
+                    adb_exe, *serial,
                     'shell', 'su', '-c', f'rm {target_path}'
                 ]
                 subprocess.run(rm_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)
@@ -294,13 +297,15 @@ class PartitionFlashWorker(QThread):
         try:
             partition_name = self.partition_info['name']
             partition_success = True
-            adb_exe = resolve_platform_tool(self.platform_tools_path, 'adb')
+            adb_exe = ToolPaths.instance().adb
+
+            serial = DeviceManager.instance().serial_args()
             
             # Step 1: Push the image file to /sdcard
             self.progress.emit(f"Pushing image file to device...")
             self.log_message.emit(f"Pushing image for {partition_name} to device...")
             push_command = [
-                adb_exe,
+                adb_exe, *serial,
                 'push', self.image_path, f'/sdcard/{partition_name}.img'
             ]
             # Windows specific: Create a new process group and hide the console window.
@@ -322,7 +327,7 @@ class PartitionFlashWorker(QThread):
             self.progress.emit(f"Flashing {partition_name}...")
             self.log_message.emit(f"Flashing {partition_name}...")
             dd_command = [
-                adb_exe,
+                adb_exe, *serial,
                 'shell', 'su', '-c',
                 f'dd if=/sdcard/{partition_name}.img of=/dev/block/by-name/{partition_name} bs=4M'
             ]
@@ -339,7 +344,7 @@ class PartitionFlashWorker(QThread):
             self.progress.emit(f"Cleaning up...")
             self.log_message.emit(f"Cleaning up temporary files...")
             rm_command = [
-                adb_exe,
+                adb_exe, *serial,
                 'shell', 'su', '-c', f'rm /sdcard/{partition_name}.img'
             ]
             result = subprocess.run(rm_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)

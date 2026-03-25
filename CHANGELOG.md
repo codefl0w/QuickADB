@@ -4,6 +4,22 @@ The changelog only includes what's new. To read feature descriptions, see [Featu
 For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md).
 
 
+# [4.1.0] - 26.03.2026
+
+### Added
+- Device selection support
+- Centralized tool path management
+- Install APK flags
+
+### Changed
+- QuickADB: Re-labeled "extract logs" to "export logs"
+- QuickADB: Changed contact method from email to website
+- GSI Flasher: Removed support for compressed GSI images (.img.gz, .img.xz)
+- Wireless ADB: fixed freezing on 15-second timeout
+
+
+### Improved
+- File Explorer: Refactored code to eliminate duplication and redundancy
 
 
 # [4.0.2] - 14.03.2026

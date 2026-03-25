@@ -123,10 +123,9 @@ QComboBox {
     border-radius: 6px;
     padding: 5px;
 }
-
 QComboBox::drop-down {
-    border: none;
-    background-color: #303d60;
+    border-radius: 6px;
+    background-color: #313f63ff;
 }
 
 QProgressBar {

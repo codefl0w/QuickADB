@@ -1,7 +1,7 @@
 """
 wirelessadb.py - Wireless ADB Configuration and QR Pairing module for QuickADB.
-Internals revamped for improved mDNS reliability and Android 11+ compatibility.
-Added "Pairing Code" support via manual entry with mDNS auto-connect.
+
+Supports QR code pairing and manual pairing code entry with mDNS auto-connect.
 """
 import os
 import secrets
@@ -187,6 +187,34 @@ class WirelessADBWorker(QThread):
             self.error_occurred.emit(f"Connection Error: {str(e)}")
 
 
+class ManualPairWorker(QThread):
+    """
+    Handles manual 'Pairing Code' execution so the UI does not freeze.
+    """
+    finished = pyqtSignal(bool, str, str)  # success, output_msg, target_ip
+
+    def __init__(self, adb_cmd: str, address: str, pin: str):
+        super().__init__()
+        self.adb_cmd = adb_cmd
+        self.address = address
+        self.pin = pin
+
+    def run(self):
+        flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        try:
+            cmd = [self.adb_cmd, "pair", self.address, self.pin]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=16, creationflags=flags)
+            
+            if "Successfully paired" in proc.stdout:
+                target_ip = self.address.split(':')[0]
+                self.finished.emit(True, proc.stdout, target_ip)
+            else:
+                err = proc.stderr.strip() or proc.stdout.strip()
+                self.finished.emit(False, err, "")
+        except Exception as e:
+            self.finished.emit(False, str(e), "")
+
+
 class WirelessADBDialog(QDialog):
 
     def __init__(self, parent_app, adb_cmd: str):
@@ -366,35 +394,25 @@ class WirelessADBDialog(QDialog):
 
         self.code_status_label.setStyleSheet("color: #4A90E2;")
         self.code_status_label.setText("Pairing...")
-        QApplication.processEvents()
 
-        flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-        try:
-            cmd = [self.adb_cmd, "pair", address, pin]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15, creationflags=flags)
+        self.manual_pair_worker = ManualPairWorker(self.adb_cmd, address, pin)
+        self.manual_pair_worker.finished.connect(self._on_manual_pair_finished)
+        self.manual_pair_worker.start()
+
+    def _on_manual_pair_finished(self, success: bool, msg: str, target_ip: str):
+        if success:
+            self.code_status_label.setStyleSheet("color: #2E8B57; font-weight: bold;")
+            self.code_status_label.setText("Paired! Auto-connecting...")
             
-            if "Successfully paired" in proc.stdout:
-                self.code_status_label.setStyleSheet("color: #2E8B57; font-weight: bold;")
-                self.code_status_label.setText("Paired! Auto-connecting...")
-                
-                # Extract IP to scan for the main connection port
-                target_ip = address.split(':')[0]
-                
-                # Start lightweight auto-connector
-                self.auto_worker = AutoConnectWorker(target_ip, self.adb_cmd)
-                self.auto_worker.connected_success.connect(self._on_connected)
-                self.auto_worker.error_occurred.connect(self._on_error)
-                self.auto_worker.start()
-                
-            else:
-                err = proc.stderr.strip() or proc.stdout.strip()
-                self.code_status_label.setStyleSheet("color: #FF0000;")
-                self.code_status_label.setText("Pairing Failed")
-                QMessageBox.warning(self, "Pairing Failed", f"Failed to pair:\n{err}")
-                
-        except Exception as e:
-            self.code_status_label.setText("Error")
-            QMessageBox.critical(self, "Error", f"Exception during pairing: {str(e)}")
+            # Start lightweight auto-connector
+            self.auto_worker = AutoConnectWorker(target_ip, self.adb_cmd)
+            self.auto_worker.connected_success.connect(self._on_connected)
+            self.auto_worker.error_occurred.connect(self._on_error)
+            self.auto_worker.start()
+        else:
+            self.code_status_label.setStyleSheet("color: #FF0000;")
+            self.code_status_label.setText("Pairing Failed")
+            QMessageBox.warning(self, "Pairing Failed", f"Failed to pair:\n{msg}")
 
     def _on_paired(self):
         self.status_label.setStyleSheet("font-weight: bold; color: #2E8B57;")

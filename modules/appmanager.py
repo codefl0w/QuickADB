@@ -21,7 +21,8 @@ from typing import List
 
 from util.thememanager import ThemeManager
 
-from util.resource import get_root_dir, resource_path, resolve_platform_tool
+from util.resource import get_root_dir, resource_path
+from util.toolpaths import ToolPaths
 root_dir = get_root_dir()
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
@@ -80,8 +81,9 @@ class AppManagerWorker(QThread):
     
     def _run_adb_command(self, command_args, text=True):
         """Helper to run an ADB command consistently."""
-        adb_exe = resolve_platform_tool(self.platform_tools_path, 'adb')
-        full_command = [adb_exe] + command_args
+        from util.devicemanager import DeviceManager
+        adb_exe = ToolPaths.instance().adb
+        full_command = [adb_exe] + DeviceManager.instance().serial_args() + command_args
         creationflags = 0
         if sys.platform == "win32":
             creationflags = (
@@ -593,7 +595,7 @@ class AppManagerUI(WorkerMixin, QMainWindow):
     def __init__(self, platform_tools_path_param=None):
         super().__init__()
         # Initialize platform_tools_path as an instance variable.
-        self.platform_tools_path = platform_tools_path_param or resource_path('platform-tools')
+        self.platform_tools_path = platform_tools_path_param or ToolPaths.instance().platform_tools_dir
         
         self.setWindowTitle("QuickADB App Manager")
         self.setMinimumSize(1000, 700)

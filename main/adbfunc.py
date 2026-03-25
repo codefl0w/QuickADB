@@ -11,7 +11,8 @@ Also handles AppImage compatibility.
 import sys
 import os
 
-from util.resource import get_root_dir, resource_path, resolve_platform_tool
+from util.resource import get_root_dir, resource_path
+from util.toolpaths import ToolPaths
 root_dir = get_root_dir()
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
@@ -19,7 +20,7 @@ if root_dir not in sys.path:
 import subprocess
 import math
 from PyQt6.QtWidgets import (QFileDialog, QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-                            QLineEdit, QPushButton, QMessageBox, QTextEdit)
+                            QLineEdit, QPushButton, QMessageBox, QTextEdit, QCheckBox)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 import threading
 
@@ -100,7 +101,7 @@ class DeviceInfoWorker(QThread):
     def __init__(self, platform_tools_path):
         super().__init__()
         self.platform_tools_path = platform_tools_path
-        self.adb_path = resolve_platform_tool(platform_tools_path, "adb")
+        self.adb_path = ToolPaths.instance().adb
 
     def run(self):
         commands = self._get_device_commands()
@@ -141,7 +142,9 @@ class DeviceInfoWorker(QThread):
         self.info_ready.emit("\n".join(results))
 
     def _get_device_commands(self):
-        adb_cmd = f'"{self.adb_path}"'
+        from util.devicemanager import DeviceManager
+        serial_flag = DeviceManager.instance().serial_flag()
+        adb_cmd = f'"{self.adb_path}" {serial_flag}'
         return {
             "Fingerprint": f"{adb_cmd} shell getprop ro.build.fingerprint",
             "Board": f"{adb_cmd} shell getprop ro.product.board",
@@ -227,10 +230,90 @@ class DeviceInfoDialog(QDialog):
 
 # [Legacy WirelessADBDialog removed - now using modules.wirelessadb]
 
+class InstallFlagsDialog(QDialog):
+    def __init__(self, current_flags, parent=None):
+        super().__init__(parent)
+        self.current_flags = current_flags.copy() if current_flags else {}
+        self.result_flags = self.current_flags.copy()
+        self._setup_ui()
+
+    def _setup_ui(self):
+        self.setWindowTitle("Install Flags")
+        self.setMinimumWidth(450)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        self.setModal(True)
+
+        layout = QVBoxLayout()
+        
+        self.checkboxes = {}
+        flags_info = [
+            ("-r", "replace existing application"),
+            ("-t", "allow test packages"),
+            ("-d", "allow version code downgrade (debuggable packages only)"),
+            ("-p", "partial application install (install-multiple only)"),
+            ("-g", "grant all runtime permissions"),
+            ("--instant", "cause the app to be installed as an ephemeral install app"),
+            ("--no-streaming", "always push APK to device and invoke Package Manager as separate steps"),
+            ("--streaming", "force streaming APK directly into Package Manager")
+        ]
+
+        for flag, desc in flags_info:
+            cb = QCheckBox(f"{flag}: {desc}")
+            if self.current_flags.get(flag, False):
+                cb.setChecked(True)
+            self.checkboxes[flag] = cb
+            layout.addWidget(cb)
+
+        # ABI flag
+        abi_layout = QHBoxLayout()
+        self.abi_cb = QCheckBox("--abi: override platform's default ABI")
+        self.abi_cb.setChecked("--abi" in self.current_flags)
+        
+        self.abi_entry = QLineEdit()
+        self.abi_entry.setPlaceholderText("e.g. arm64-v8a")
+        self.abi_entry.setEnabled(self.abi_cb.isChecked())
+        if "--abi" in self.current_flags:
+            self.abi_entry.setText(self.current_flags["--abi"])
+            
+        self.abi_cb.toggled.connect(self.abi_entry.setEnabled)
+        
+        abi_layout.addWidget(self.abi_cb)
+        abi_layout.addWidget(self.abi_entry)
+        layout.addLayout(abi_layout)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        apply_btn = QPushButton("Apply")
+        apply_btn.clicked.connect(self._apply)
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(apply_btn)
+        layout.addLayout(btn_layout)
+        self.setLayout(layout)
+
+    def _apply(self):
+        self.result_flags.clear()
+        for flag, cb in self.checkboxes.items():
+            if cb.isChecked():
+                self.result_flags[flag] = True
+                
+        if self.abi_cb.isChecked() and self.abi_entry.text().strip():
+            self.result_flags["--abi"] = self.abi_entry.text().strip()
+
+        if self.result_flags.get("--streaming", False) and self.result_flags.get("--no-streaming", False):
+            QMessageBox.warning(self, "Conflict", "You cannot select both --streaming and --no-streaming.")
+            return
+
+        self.accept()
+
+
 class InstallAPKDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_app = parent
+        self.install_flags = {}
         self._setup_ui()
 
     def _setup_ui(self):
@@ -256,13 +339,26 @@ class InstallAPKDialog(QDialog):
         
         layout.addLayout(path_layout)
 
-        # Install button
+        # Setup custom buttons
+        action_layout = QHBoxLayout()
+        
+        self.flags_btn = QPushButton("Flags")
+        self.flags_btn.clicked.connect(self._open_flags)
+        
         install_btn = QPushButton("Install APK")
         install_btn.clicked.connect(self._install_apk)
         install_btn.setDefault(True)
-        layout.addWidget(install_btn)
+        
+        action_layout.addWidget(self.flags_btn)
+        action_layout.addWidget(install_btn)
+        layout.addLayout(action_layout)
 
         self.setLayout(layout)
+
+    def _open_flags(self):
+        dialog = InstallFlagsDialog(self.install_flags, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.install_flags = dialog.result_flags
 
     def _browse_apk(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -282,8 +378,18 @@ class InstallAPKDialog(QDialog):
             return
 
         if hasattr(self.parent_app, 'run_command_async'):
+            flag_str = ""
+            for k, v in self.install_flags.items():
+                if k == "--abi":
+                    flag_str += f" --abi {v}"
+                else:
+                    flag_str += f" {k}"
+            flag_str = flag_str.strip()
+
+            cmd = f'adb install {flag_str} "{apk_path}"' if flag_str else f'adb install "{apk_path}"'
+
             self.parent_app.run_command_async(
-                f'adb install "{apk_path}"',
+                cmd,
                 f"Installing {os.path.basename(apk_path)}",
                 "ADB"
             )
@@ -518,13 +624,9 @@ def sideload_file(self):
 
 
 def show_wireless_adb_ui(self):
-    import os
     from modules.wirelessadb import WirelessADBDialog
     # Show wireless ADB connection dialog (new QR pairing module)
-    # Passed parent and platform_tools_path dynamically since parent represents quickadb.py
-    adb_exe = "adb.exe" if os.name == 'nt' else "adb"
-    adb_path = os.path.join(self.platform_tools_path, adb_exe)
-    dialog = WirelessADBDialog(self, adb_path)
+    dialog = WirelessADBDialog(self, ToolPaths.instance().adb)
     dialog.exec()
 
 

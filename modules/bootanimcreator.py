@@ -14,7 +14,8 @@ import time
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple
 
-from util.resource import get_root_dir, resource_path, resolve_platform_tool
+from util.resource import get_root_dir, resource_path
+from util.toolpaths import ToolPaths
 
 root_dir = get_root_dir()
 if root_dir not in sys.path:
@@ -33,9 +34,14 @@ from PyQt6.QtGui import QPixmap, QDesktopServices
 
 from PIL import Image, ImageSequence
 
-PLATFORM_TOOLS_DIR = resource_path("platform-tools")
-PLATFORM_ADB = resolve_platform_tool(PLATFORM_TOOLS_DIR, "adb")
-ADB_CMD = PLATFORM_ADB if os.path.exists(PLATFORM_ADB) else ("adb.exe" if os.name == "nt" else "adb")
+PLATFORM_TOOLS_DIR = ToolPaths.instance().platform_tools_dir
+ADB_CMD = ToolPaths.instance().adb
+
+def adb_command(*args, adb_cmd: str = None) -> list:
+    """Build an ADB command list with the selected device serial injected."""
+    from util.devicemanager import DeviceManager
+    cmd = adb_cmd or ADB_CMD
+    return [cmd] + DeviceManager.instance().serial_args() + list(args)
 
 BOOT_PATHS = [
     "/system/media/bootanimation.zip",
@@ -150,7 +156,9 @@ def cleanup_work_dirs():
         pass
 
 
-def find_remote_path_sync(adb_cmd: str = ADB_CMD) -> Optional[str]:
+def find_remote_path_sync(adb_cmd: str = None) -> Optional[str]:
+    # adb_command returns a list like ['adb', '-s', 'SERIAL']
+    adb_base = adb_command(adb_cmd=adb_cmd)
     for p in BOOT_PATHS:
         try:
             # Windows specific: Create a new process group and hide the console window.
@@ -161,7 +169,7 @@ def find_remote_path_sync(adb_cmd: str = ADB_CMD) -> Optional[str]:
                     subprocess.CREATE_NO_WINDOW
                 )
 
-            proc = subprocess.run([adb_cmd, "shell", "su", "-c", f'ls "{p}"'],
+            proc = subprocess.run(adb_base + ["shell", "su", "-c", f'ls "{p}"'],
                                   capture_output=True, text=True, timeout=6,
                                   creationflags=creationflags)
         except Exception:
@@ -172,7 +180,7 @@ def find_remote_path_sync(adb_cmd: str = ADB_CMD) -> Optional[str]:
     return None
 
 
-def pull_root_zip_sync(remote_path: str, adb_cmd: str = ADB_CMD, local_dest: str = None) -> bool:
+def pull_root_zip_sync(remote_path: str, adb_cmd: str = None, local_dest: str = None) -> bool:
     """
     Pull bootanimation.zip using root-copy to /data/local/tmp then adb pull.
     local_dest provided (module-level PULLED_ZIP expected to be set).
@@ -180,6 +188,10 @@ def pull_root_zip_sync(remote_path: str, adb_cmd: str = ADB_CMD, local_dest: str
     tmp_remote = "/data/local/tmp/bootanimation_quickadb.zip"
     if local_dest is None:
         raise RuntimeError("local_dest must be specified")
+    
+    adb_base = adb_command(adb_cmd=adb_cmd)
+    adb_str = " ".join(f'"{c}"' if " " in c else c for c in adb_base)
+    
     # Windows specific: Create a new process group and hide the console window.
     creationflags = 0
     if os.name == 'nt':
@@ -188,34 +200,35 @@ def pull_root_zip_sync(remote_path: str, adb_cmd: str = ADB_CMD, local_dest: str
             subprocess.CREATE_NO_WINDOW
         )
     try:
-        cp_cmd = [adb_cmd, "shell", "su", "-c", f'cp "{remote_path}" "{tmp_remote}" && chmod 0644 "{tmp_remote}"']
+        cp_cmd = adb_base + ["shell", "su", "-c", f'cp "{remote_path}" "{tmp_remote}" && chmod 0644 "{tmp_remote}"']
         cp = subprocess.run(cp_cmd, capture_output=True, text=True, timeout=25, creationflags=creationflags)
         if cp.returncode == 0:
-            pull = subprocess.run([adb_cmd, "pull", tmp_remote, local_dest], capture_output=True, text=True, timeout=90, creationflags=creationflags)
+            pull_cmd = adb_base + ["pull", tmp_remote, local_dest]
+            pull = subprocess.run(pull_cmd, capture_output=True, text=True, timeout=90, creationflags=creationflags)
             if pull.returncode == 0 and os.path.exists(local_dest):
-                subprocess.run([adb_cmd, "shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True, creationflags=creationflags)
+                subprocess.run(adb_base + ["shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True, creationflags=creationflags)
                 return True
     except Exception:
         pass
     # fallback shell style
     try:
-        proc = subprocess.run(f'{adb_cmd} shell su -c \'cp "{remote_path}" "{tmp_remote}" && chmod 0644 "{tmp_remote}"\'',
+        proc = subprocess.run(f'{adb_str} shell su -c \'cp "{remote_path}" "{tmp_remote}" && chmod 0644 "{tmp_remote}"\'',
                               shell=True, capture_output=True, text=True, timeout=30, creationflags=creationflags)
         if proc.returncode == 0:
-            pull = subprocess.run([adb_cmd, "pull", tmp_remote, local_dest], capture_output=True, text=True, timeout=90, creationflags=creationflags)
+            pull = subprocess.run(adb_base + ["pull", tmp_remote, local_dest], capture_output=True, text=True, timeout=90, creationflags=creationflags)
             if pull.returncode == 0 and os.path.exists(local_dest):
-                subprocess.run(f'{adb_cmd} shell "su -c rm \\"{tmp_remote}\\""', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags)
+                subprocess.run(f'{adb_str} shell "su -c rm \\"{tmp_remote}\\""', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags)
                 return True
     except Exception:
         pass
     try:
-        proc1 = subprocess.run([adb_cmd, "shell", f'su -c cp "{remote_path}" "{tmp_remote}"'], capture_output=True, text=True, timeout=20, creationflags=creationflags)
+        proc1 = subprocess.run(adb_base + ["shell", f'su -c cp "{remote_path}" "{tmp_remote}"'], capture_output=True, text=True, timeout=20, creationflags=creationflags)
         if proc1.returncode == 0:
-            proc2 = subprocess.run([adb_cmd, "shell", f'su -c chmod 0644 "{tmp_remote}"'], capture_output=True, text=True, timeout=10, creationflags=creationflags)
+            proc2 = subprocess.run(adb_base + ["shell", f'su -c chmod 0644 "{tmp_remote}"'], capture_output=True, text=True, timeout=10, creationflags=creationflags)
             if proc2.returncode == 0:
-                pull = subprocess.run([adb_cmd, "pull", tmp_remote, local_dest], capture_output=True, text=True, timeout=90, creationflags=creationflags)
+                pull = subprocess.run(adb_base + ["pull", tmp_remote, local_dest], capture_output=True, text=True, timeout=90, creationflags=creationflags)
                 if pull.returncode == 0 and os.path.exists(local_dest):
-                    subprocess.run([adb_cmd, "shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True, creationflags=creationflags)
+                    subprocess.run(adb_base + ["shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True, creationflags=creationflags)
                     return True
     except Exception:
         pass

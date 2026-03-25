@@ -14,7 +14,9 @@ from functools import partial
 from typing import Optional, List, Tuple, Callable
 
 # Setup root dir to allow imports relative to project root
-from util.resource import get_root_dir, resource_path, get_clean_env, open_url_safe, resolve_platform_tool
+from util.resource import get_root_dir, resource_path, get_clean_env, open_url_safe
+from util.toolpaths import ToolPaths
+from util.devicemanager import DeviceManager
 root_dir = get_root_dir()
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
@@ -33,7 +35,7 @@ import modules.bootanimcreator as bootanimcreator
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QPushButton, QLabel, QFrame,
     QGridLayout, QVBoxLayout, QHBoxLayout, QTextEdit, QMessageBox,
-    QFileDialog, QScrollArea, QDialog, QTextBrowser
+    QFileDialog, QScrollArea, QDialog, QTextBrowser, QComboBox
 )
 from PyQt6.QtGui import QTextCursor, QColor
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -47,18 +49,27 @@ except ImportError:
 from main.adbfunc import CommandRunner
 
 
+class DeviceRefreshWorker(QThread):
+    """Background thread to refresh ADB and Fastboot devices without hanging the UI."""
+    finished = pyqtSignal(list)
+
+    def run(self):
+        dm = DeviceManager.instance()
+        devices = dm.refresh()
+        self.finished.emit(devices)
+
 class QuickADBApp(QMainWindow):
     # Main window
 
     # Constants 
-    APP_VERSION = "V4.0.2"
+    APP_VERSION = "V4.1.0"
     APP_SUFFIX = "Full"
     BUTTON_WIDTH = 150
     BUTTON_HEIGHT = 40
     GITHUB_URL = "https://github.com/codefl0w/QuickADB"
     XDA_URL = "https://xdaforums.com/t/new-quickadb-v4-adb-app-manager-file-explorer-gsi-flasher-and-more.4781847/"
     DONATE_URL = "https://buymeacoffee.com/fl0w" # please?
-    CONTACT_EMAIL = "mailto:fl0w_dev@protonmail.com"
+    CONTACT_URL = "https://codefl0w.xyz/contact"
 
     def __init__(self):
         super().__init__()
@@ -66,7 +77,7 @@ class QuickADBApp(QMainWindow):
         # State 
         self.adb_version = "Unknown"
         self.fastboot_version = "Unknown"
-        self.platform_tools_path = resource_path('platform-tools')
+        self.platform_tools_path = ToolPaths.instance().platform_tools_dir
         self.command_runner = None
         self.payload_dumper_window = None
         self.super_dumper_window = None
@@ -95,14 +106,40 @@ class QuickADBApp(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(15, 10, 15, 10)
-
+        # Top section: Logo (center) and Device Selector (right)
+        top_layout = QGridLayout()
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setColumnStretch(0, 1) # Left spacer stretch
+        top_layout.setColumnStretch(1, 0) # Center logo
+        top_layout.setColumnStretch(2, 1) # Right device selector stretch
+        
         # Logo
         self.logo_container = QWidget()
         self.logo_layout = QVBoxLayout(self.logo_container)
         self.logo_layout.setContentsMargins(0, 0, 0, 0)
         self.logo_widget = None
         self._refresh_logo_for_current_theme()
-        main_layout.addWidget(self.logo_container)
+        top_layout.addWidget(self.logo_container, 0, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        # Device selector dropdown
+        device_container = QWidget()
+        device_layout = QHBoxLayout(device_container)
+        device_layout.setContentsMargins(0, 0, 0, 0)
+        device_layout.addWidget(QLabel("Device:"))
+        self.device_combo = QComboBox()
+        self.device_combo.setMinimumWidth(160)
+        self.device_combo.setPlaceholderText("No devices, refresh to check")
+        self.device_combo.currentIndexChanged.connect(self._on_device_selected)
+        device_layout.addWidget(self.device_combo)
+        
+        self.refresh_devices_btn = QPushButton("⟳")
+        self.refresh_devices_btn.setFixedWidth(30)
+        self.refresh_devices_btn.setToolTip("Refresh device list")
+        self.refresh_devices_btn.clicked.connect(self.check_devices)
+        device_layout.addWidget(self.refresh_devices_btn)
+        
+        top_layout.addWidget(device_container, 0, 2, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        main_layout.addLayout(top_layout)
 
         # Menu buttons
         menu_frame = QFrame()
@@ -203,25 +240,33 @@ class QuickADBApp(QMainWindow):
     # --- Command Execution & Helpers ---
 
     def _get_executable_path(self, name: str) -> Optional[str]:
-        """Constructs the full path for an executable in platform-tools."""
-        if not os.path.isdir(self.platform_tools_path):
-            QMessageBox.critical(self, "Error", f"platform-tools folder not found at: {self.platform_tools_path}")
+        """Returns the full path for an executable via the centralized ToolPaths."""
+        tp = ToolPaths.instance()
+        if not os.path.isdir(tp.platform_tools_dir):
+            QMessageBox.critical(self, "Error", f"platform-tools folder not found at: {tp.platform_tools_dir}")
             return None
-        return resolve_platform_tool(self.platform_tools_path, name)
+        return getattr(tp, name, None) or tp.adb  # fallback
 
     def run_command_async(self, command: str, description: str, command_type: str):
         """Executes a command asynchronously in a separate thread."""
         current_time = time.strftime("%H:%M:%S")
         self.log_action(f"[{current_time}] Executing {command_type} command: {description}", "#00ffff")
 
-        # Resolve adb/fastboot to absolute paths
+        # Resolve adb/fastboot to absolute paths and inject -s SERIAL for multi-device
         command_stripped = (command or "").lstrip()
+        dm = DeviceManager.instance()
         for tool in ("adb", "fastboot"):
             if command_stripped == tool or command_stripped.startswith(tool + " "):
                 exe_path = self._get_executable_path(tool)
                 if exe_path:
-                    # Replace tool command with its absolute path properly quoted
-                    command = f'"{exe_path}"{command_stripped[len(tool):]}'
+                    remainder = command_stripped[len(tool):].lstrip()
+                    # Inject -s SERIAL for ADB/Fastboot commands that target a device
+                    serial_flag = ""
+                    if tool == "adb" and not dm.is_global_adb_command(remainder):
+                        serial_flag = dm.serial_flag()
+                    elif tool == "fastboot" and not dm.is_global_fastboot_command(remainder):
+                        serial_flag = dm.serial_flag()
+                    command = f'"{exe_path}" {serial_flag}{remainder}'
                 break
 
         self.command_runner = CommandRunner(command, self.platform_tools_path)
@@ -401,6 +446,84 @@ class QuickADBApp(QMainWindow):
         else:
             QMessageBox.information(self, "Not Implemented", "Wireless ADB UI not yet implemented.")
 
+    # --- Device Management ---
+
+    # Pastel state colors for the device dropdown
+    _STATE_COLORS = {
+        "device":       "#77DD77",  # pastel green
+        "unauthorized": "#FDFD96",  # pastel yellow
+        "recovery":     "#89CFF0",  # pastel blue
+        "offline":      "#FF6961",  # pastel red
+        "fastboot":     "#FFB347",  # pastel orange
+    }
+
+    def check_devices(self):
+        """Scan connected devices and populate the dropdown."""
+        self.log_action("Scanning for devices...", "#00ffff")
+        self.refresh_devices_btn.setEnabled(False)
+        self.device_combo.setPlaceholderText("Scanning...")
+        
+        # Use background thread to avoid UI freeze
+        self._device_worker = DeviceRefreshWorker()
+        self._device_worker.finished.connect(self._on_devices_refreshed)
+        self._device_worker.start()
+
+    def _on_devices_refreshed(self, devices):
+        self.refresh_devices_btn.setEnabled(True)
+        self.device_combo.setPlaceholderText("No devices, refresh to check")
+        
+        self._populate_device_combo(devices)
+        if not devices:
+            self.log_action("No devices found.", "#ff6666")
+        else:
+            for d in devices:
+                color = self._STATE_COLORS.get(d['state'], '#ffffff')
+                self.log_action(f"  {d['name']}  ({d['serial']})  [{d['state']}]", color)
+            self.log_action(f"{len(devices)} device(s) detected.", "#77DD77")
+
+    def _populate_device_combo(self, devices):
+        """Fill the device dropdown with detected devices and color-coded dots."""
+        self.device_combo.blockSignals(True)
+        self.device_combo.clear()
+
+        dm = DeviceManager.instance()
+        for dev in devices:
+            state = dev["state"]
+            color = self._STATE_COLORS.get(state, "#aaaaaa")
+            dot = "●"
+            label = f"{dot} {dev['name']}  [{state}]"
+            self.device_combo.addItem(label, userData=dev["serial"])
+            # Colorize the dot via the item's foreground
+            idx = self.device_combo.count() - 1
+            self.device_combo.setItemData(idx, QColor(color), Qt.ItemDataRole.ForegroundRole)
+
+        # Restore selection
+        if dm.selected_serial:
+            for i in range(self.device_combo.count()):
+                if self.device_combo.itemData(i) == dm.selected_serial:
+                    self.device_combo.setCurrentIndex(i)
+                    break
+        elif self.device_combo.count() > 0:
+            self.device_combo.setCurrentIndex(0)
+
+        self.device_combo.blockSignals(False)
+
+        # Trigger selection update
+        if self.device_combo.count() > 0:
+            self._on_device_selected(self.device_combo.currentIndex())
+
+    def _on_device_selected(self, index):
+        """Update DeviceManager when user picks a device from the dropdown."""
+        if index < 0:
+            return
+        serial = self.device_combo.itemData(index)
+        if serial:
+            DeviceManager.instance().selected_serial = serial
+
+    def refresh_devices(self):
+        """Alias for check_devices, callable from other modules."""
+        self.check_devices()
+
     # --- Versioning & Update Check ---
     class UpdateCheckerThread(QThread):
         update_available = pyqtSignal(str, str)
@@ -537,7 +660,7 @@ class QuickADBApp(QMainWindow):
     def view_github(self): self._open_url(self.GITHUB_URL)
     def view_xda_thread(self): self._open_url(self.XDA_URL)
     def donate(self): self._open_url(self.DONATE_URL) # please?
-    def contact(self): self._open_url(self.CONTACT_EMAIL) 
+    def contact(self): self._open_url(self.CONTACT_URL) 
 
     def show_about(self, event=None):
         dialog = QDialog(self)

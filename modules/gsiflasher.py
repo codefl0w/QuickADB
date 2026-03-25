@@ -13,7 +13,8 @@ import time
 import webbrowser
 from pathlib import Path
 
-from util.resource import get_root_dir, resource_path, resolve_platform_tool
+from util.resource import get_root_dir, resource_path
+from util.toolpaths import ToolPaths
 root_dir = get_root_dir()
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
@@ -58,8 +59,160 @@ class DeviceScannerWorker(QThread):
         self.running = True
 
     def run(self):
-        adb_cmd = resolve_platform_tool(self.platform_tools_path, "adb")
-        fastboot_cmd = resolve_platform_tool(self.platform_tools_path, "fastboot")
+        adb_cmd = ToolPaths.instance().adb
+        fastboot_cmd = ToolPaths.instance().fastboot
+
+        self.status_msg.emit("Checking for connected devices...")
+        self.log_msg.emit("[INFO] Starting device scan...")
+
+        try:
+            # Windows specific: Create a new process group and hide the console window.
+            creationflags = 0
+            if os.name == "nt":
+                creationflags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP |
+                    subprocess.CREATE_NO_WINDOW
+                )
+
+            # 1. Check ADB
+            adb_proc = subprocess.run([adb_cmd, "devices"], 
+                                      capture_output=True, text=True, creationflags=creationflags)
+            adb_devs = []
+            for line in adb_proc.stdout.splitlines()[1:]:
+                parts = line.split()
+                if len(parts) >= 2 and parts[1].lower() == "device":
+                    adb_devs.append(parts[0])
+
+            # 2. Check Fastboot
+            fastboot_proc = subprocess.run([fastboot_cmd, "devices"], 
+                                           capture_output=True, text=True, creationflags=creationflags)
+            fb_devs = []
+            for line in fastboot_proc.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[1].lower() in ("fastboot", "device", "recovery", "bootloader"):
+                    fb_devs.append(parts[0])
+
+            if adb_devs or fb_devs:
+                self.log_msg.emit(f"[INFO] Scan complete. ADB: {len(adb_devs)}, Fastboot: {len(fb_devs)}.")
+                self.status_msg.emit("Waiting for user input...")
+                self.devices_found.emit(adb_devs, fb_devs)
+            else:
+                self.log_msg.emit("[INFO] No devices detected across ADB or Fastboot.")
+                self.status_msg.emit("No devices found. Please connect a device and try again.")
+                self.devices_found.emit([], [])
+
+        except Exception as e:
+            self.log_msg.emit(f"[ERROR] Device scan failed: {str(e)}")
+            self.status_msg.emit("Error during device scan.")
+
+
+# ----- GSIFlasherUI -----
+class GSIFlasherUI(QMainWindow):
+
+    def __init__(self, platform_tools_path=None, parent=None):
+        super().__init__(parent)
+
+
+        self.platform_tools_path = platform_tools_path or os.path.join(root_dir, "platform-tools")
+        self.gsi_image_path = None
+        self.system_partition_available = False
+        self.fastbootd_confirmed = False
+        self.command_threads = []   # keep Python Thread refs to avoid GC
+        self.scanner_thread = None
+
+        self.setWindowTitle("QuickADB GSI Flasher")
+        self.setMinimumSize(700, 500)
+        self.setup_ui()
+        ThemeManager.apply_theme(self)
+
+    def setup_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        title = QLabel("GSI Flasher")
+        f = QFont()
+        f.setPointSize(14)
+        f.setBold(True)
+        title.setFont(f)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+
+        # Log output
+        self.log_output = QTextEdit()
+        self.log_output.setReadOnly(True)
+        self.log_output.setMinimumHeight(260)
+        layout.addWidget(self.log_output)
+
+        # Buttons
+        btn_frame = QFrame()
+        btn_layout = QHBoxLayout(btn_frame)
+        btn_layout.setSpacing(8)
+
+        self.recheck_btn = QPushButton("Check Devices")
+        self.recheck_btn.clicked.connect(self.on_check_devices_clicked)
+        btn_layout.addWidget(self.recheck_btn)
+
+        self.treble_info_btn = QPushButton("Treble Info App")
+        self.treble_info_btn.clicked.connect(self.open_treble_info_app)
+        btn_layout.addWidget(self.treble_info_btn)
+
+        self.load_gsi_btn = QPushButton("Load GSI Image")
+        self.load_gsi_btn.clicked.connect(self.load_gsi_image)
+        btn_layout.addWidget(self.load_gsi_btn)
+
+        self.flash_gsi_btn = QPushButton("Flash GSI Image")
+        self.flash_gsi_btn.setEnabled(False)
+        self.flash_gsi_btn.clicked.connect(self.flash_gsi_image)
+        btn_layout.addWidget(self.flash_gsi_btn)
+
+        layout.addWidget(btn_frame)
+
+        bottom_frame = QFrame()
+        bottom_layout = QHBoxLayout(bottom_frame)
+        bottom_layout.setSpacing(8)
+
+        self.delete_product_btn = QPushButton("Delete product")
+        self.delete_product_btn.clicked.connect(lambda: self.delete_partition("product"))
+        bottom_layout.addWidget(self.delete_product_btn)
+
+        self.delete_sys_ext_btn = QPushButton("Delete system_ext")
+        self.delete_sys_ext_btn.clicked.connect(lambda: self.delete_partition("system_ext"))
+        bottom_layout.addWidget(self.delete_sys_ext_btn)
+
+        self.more_info_btn = QPushButton("More Info")
+        self.more_info_btn.clicked.connect(self.open_more_info)
+        bottom_layout.addWidget(self.more_info_btn)
+
+        self.reboot_btn = QPushButton("Reboot Device")
+        self.reboot_btn.clicked.connect(self.reboot_device)
+        bottom_layout.addWidget(self.reboot_btn)
+
+        layout.addWidget(bottom_frame)
+
+        # Active Status Label
+        self.status_label = QLabel("Ready. Click 'Check Devices' to begin.")
+        f_status = QFont()
+        f_status.setItalic(True)
+        self.status_label.setFont(f_status)
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.status_label)
+
+        # Initial guidance logs
+        self.log("[INFO] This method may not work on Samsung devices unless using custom recovery.")
+        self.log("[INFO] Use GSI images equal or higher Android version than stock OS.")
+
+    # ---- Logging helper ----
+    def log(self, message: str):
+        ts = time.strftime("%H:%M:%S")
+        try:
+            self.log_output.append(f"[{ts}] {message}")
+            self.log_output.ensureCursorVisible()
+        except Exception:
+            # fallback: print to stdout if UI fails
+            print(f"[{ts}] {message}")
 
         self.status_msg.emit("Checking for connected devices...")
         self.log_msg.emit("[INFO] Starting device scan...")
@@ -217,10 +370,12 @@ class GSIFlasherUI(QMainWindow):
         """
         Executes an ADB/Fastboot command using QuickADB's CommandRunner.
         """
-        # CommandRunner expects the command list to NOT include the actual executable name
-        # if the executable is adb. However, if it's fastboot, it still needs to be passed properly.
-        # So we just pass the full string to shell=True format, or format it.
+        from util.devicemanager import DeviceManager
+        serial_args = DeviceManager.instance().serial_args()
+
         if isinstance(command, list):
+            if command and ("adb" in command[0] or "fastboot" in command[0]):
+                command = [command[0]] + serial_args + command[1:]
             cmd_str = " ".join(f'"{c}"' if " " in c else c for c in command)
         else:
             cmd_str = command
@@ -251,8 +406,7 @@ class GSIFlasherUI(QMainWindow):
         thread.start()
 
     def _tool_path(self, tool_name: str) -> str:
-        return resolve_platform_tool(self.platform_tools_path, tool_name)
-        return thread
+        return getattr(ToolPaths.instance(), tool_name, ToolPaths.instance().adb)
 
     # ---- Device detection flow (New Linear State Machine) ----
 
@@ -279,23 +433,44 @@ class GSIFlasherUI(QMainWindow):
         Receives results from DeviceScannerWorker and handles user prompts.
         Implements the 3 multi-device scenarios.
         """
+        from util.devicemanager import DeviceManager
+        selected = DeviceManager.instance().selected_serial
+
+        # Filter by selected device if one is selected
+        if selected:
+            if selected in adb_devs:
+                adb_devs = [selected]
+                fb_devs = []
+            elif selected in fb_devs:
+                adb_devs = []
+                fb_devs = [selected]
+            else:
+                self.log(f"[WARN] Selected device {selected} not found connected.")
+                adb_devs = []
+                fb_devs = []
+
         num_adb = len(adb_devs)
         num_fb = len(fb_devs)
 
-        # Scenario 1: More than 1 ADB device
+        if num_adb == 0 and num_fb == 0:
+            if selected:
+                self.status_label.setText(f"Device {selected} not found.")
+            return
+
+        # Scenario 1: More than 1 ADB device (None selected)
         if num_adb > 1:
             self.log("[WARN] Multiple ADB devices detected.")
             QMessageBox.warning(self, "Multiple Devices", 
-                                "More than one ADB device detected.\nQuickADB V4 currently does not support multi-device operations natively.\n\nPlease disconnect the unwanted device(s) and try again.")
-            self.status_label.setText("Multiple ADB devices. Disconnect one.")
+                                "More than one ADB device detected and none are selected.\nPlease select a device from the dropdown in the QuickADB main window.")
+            self.status_label.setText("Select a device in main window.")
             return
 
         # Scenario 2: More than 1 Fastboot device
         if num_fb > 1:
             self.log("[WARN] Multiple Fastboot devices detected.")
             QMessageBox.warning(self, "Multiple Devices", 
-                                "More than one Fastboot device detected.\nQuickADB V4 currently does not support multi-device operations natively.\n\nPlease disconnect the unwanted device(s) and try again.")
-            self.status_label.setText("Multiple Fastboot devices. Disconnect one.")
+                                "More than one Fastboot device detected and none are selected.\nPlease select your target device from the dropdown in the QuickADB main window.")
+            self.status_label.setText("Select a device in main window.")
             return
 
         # Scenario 3: 1 ADB and 1 Fastboot device
@@ -430,7 +605,7 @@ class GSIFlasherUI(QMainWindow):
     def load_gsi_image(self):
         dlg = QFileDialog(self)
         dlg.setFileMode(QFileDialog.FileMode.ExistingFile)
-        dlg.setNameFilter("Image files (*.img *.img.gz *.img.xz);;All Files (*)")
+        dlg.setNameFilter("Image files (*.img);;All Files (*)")
         if dlg.exec():
             files = dlg.selectedFiles()
             if files:
