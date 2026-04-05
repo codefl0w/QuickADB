@@ -8,7 +8,7 @@ For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blo
 
 ### Added
 
-- FOSS Market: fully functional F-Droid client with automatic app installations, custom repos and app data (Miscellaneous)
+- App Market: fully functional F-Droid client with automatic app installations, custom repos and app data (Miscellaneous)
 - Magisk Manager: fully automated device rooting & module management (Advanced)
 
 ### Changed
