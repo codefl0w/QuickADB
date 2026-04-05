@@ -61,7 +61,7 @@ The latest source is built into executables for all three platforms.
 
 ## Requirements
 
-- Python 3.10 or higher
+- Python 3.10 or higher (Only for building, executables work out of the box)
 - USB debugging enabled on the target device
 - _(For root features)_ A rooted device with `su` access
 
