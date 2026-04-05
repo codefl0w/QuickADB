@@ -1,5 +1,5 @@
 '''
-Main page. Handles some variables and can do simple adb / fastboot tasks, so it's esentially enough to run on its own.
+quickadb.py - Main page. Handles some variables and can do simple adb / fastboot tasks, so it's esentially enough to run on its own.
 Other adb tasks that require more code, such as the device spec dialog, are handled by the adbfunc.py module.
 
 '''
@@ -7,7 +7,6 @@ import sys
 import os
 import threading
 import subprocess
-import requests
 import time
 from datetime import datetime
 from functools import partial
@@ -23,19 +22,22 @@ if root_dir not in sys.path:
 
 from modules.terminal import show_terminal_window
 from modules.payloaddumper import show_payload_dumper_window
+from modules.fossmarket import run_foss_market
 from modules.gsiflasher import GSIFlasherUI
+from modules.magiskmanager import run_root_manager
 from modules.superdumper import show_super_img_dumper
 from modules.fileexplorer import ADBFileExplorer
 import modules.appmanager as appmanager
 from modules.partitionmanager import PartitionManager
 from util.thememanager import ThemeManager
+from util.updater import UpdateManager
 import main.adbfunc as adbfunc
 import modules.bootanimcreator as bootanimcreator
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QPushButton, QLabel, QFrame,
     QGridLayout, QVBoxLayout, QHBoxLayout, QTextEdit, QMessageBox,
-    QFileDialog, QScrollArea, QDialog, QTextBrowser, QComboBox
+    QFileDialog, QScrollArea, QDialog, QTextBrowser, QComboBox, QSizePolicy
 )
 from PyQt6.QtGui import QTextCursor, QColor
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -61,8 +63,8 @@ class DeviceRefreshWorker(QThread):
 class QuickADBApp(QMainWindow):
     # Main window
 
-    # Constants 
-    APP_VERSION = "V4.1.0"
+    # Constants
+    APP_VERSION = "V5.0.0"
     APP_SUFFIX = "Full"
     BUTTON_WIDTH = 150
     BUTTON_HEIGHT = 40
@@ -70,11 +72,12 @@ class QuickADBApp(QMainWindow):
     XDA_URL = "https://xdaforums.com/t/new-quickadb-v4-adb-app-manager-file-explorer-gsi-flasher-and-more.4781847/"
     DONATE_URL = "https://buymeacoffee.com/fl0w" # please?
     CONTACT_URL = "https://codefl0w.xyz/contact"
+    CHANGELOG_URL_TEMPLATE = "https://raw.githubusercontent.com/codefl0w/QuickADB/{ref}/res/whatsnew.html"
 
     def __init__(self):
         super().__init__()
 
-        # State 
+        # State
         self.adb_version = "Unknown"
         self.fastboot_version = "Unknown"
         self.platform_tools_path = ToolPaths.instance().platform_tools_dir
@@ -87,16 +90,18 @@ class QuickADBApp(QMainWindow):
         self.gsi_window = None
         self.partition_manager = None
         self.bootanim_creator_window = None
+        self.foss_market_window = None
 
         # Init
         self.init_ui()
         ThemeManager.apply_theme(self)
         self.fetch_versions()
         self.log_initial_info()
+        self._init_updater()
         adbfunc.add_methods_to_class(self)
         self.check_for_update()
 
-    # UI Setup 
+    # UI Setup
 
     def init_ui(self):
         self.setWindowTitle("QuickADB")
@@ -112,7 +117,7 @@ class QuickADBApp(QMainWindow):
         top_layout.setColumnStretch(0, 1) # Left spacer stretch
         top_layout.setColumnStretch(1, 0) # Center logo
         top_layout.setColumnStretch(2, 1) # Right device selector stretch
-        
+
         # Logo
         self.logo_container = QWidget()
         self.logo_layout = QVBoxLayout(self.logo_container)
@@ -120,24 +125,26 @@ class QuickADBApp(QMainWindow):
         self.logo_widget = None
         self._refresh_logo_for_current_theme()
         top_layout.addWidget(self.logo_container, 0, 1, alignment=Qt.AlignmentFlag.AlignCenter)
-        
+
         # Device selector dropdown
         device_container = QWidget()
         device_layout = QHBoxLayout(device_container)
         device_layout.setContentsMargins(0, 0, 0, 0)
-        device_layout.addWidget(QLabel("Device:"))
+        device_layout.addWidget(QLabel("Selected Device:"))
         self.device_combo = QComboBox()
-        self.device_combo.setMinimumWidth(160)
+        self.device_combo.setMinimumWidth(150)
+        self.device_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.device_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.device_combo.setPlaceholderText("No devices, refresh to check")
         self.device_combo.currentIndexChanged.connect(self._on_device_selected)
         device_layout.addWidget(self.device_combo)
-        
+
         self.refresh_devices_btn = QPushButton("⟳")
         self.refresh_devices_btn.setFixedWidth(30)
         self.refresh_devices_btn.setToolTip("Refresh device list")
         self.refresh_devices_btn.clicked.connect(self.check_devices)
         device_layout.addWidget(self.refresh_devices_btn)
-        
+
         top_layout.addWidget(device_container, 0, 2, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         main_layout.addLayout(top_layout)
 
@@ -342,19 +349,21 @@ class QuickADBApp(QMainWindow):
     def show_advanced(self):
         """Populates the grid with advanced tool buttons."""
         commands = [
-            ("Dump payload.bin", self.show_payload_dumper),
+            ("Magisk Manager", self.launch_root_manager),
             ("App Manager", self.launch_app_manager),
-            ("GSI Flasher", self.open_gsi_flasher),
-            ("Dump super.img", self.launch_super_dumper),
-            ("Partition Manager (#)", self.open_partition_manager),
             ("File Explorer", self.open_file_explorer),
+            ("GSI Flasher", self.open_gsi_flasher),
+            ("Partition Manager (#)", self.open_partition_manager),
+            ("Dump super.img", self.launch_super_dumper),
+            ("Dump payload.bin", self.show_payload_dumper),
         ]
         self._populate_commands_grid(commands)
 
     def show_misc(self):
         """Populates the grid with miscellaneous command buttons."""
         commands = [("Device Specifications", self.show_device_info),
-                    ("Boot Animation Creator", self.launch_bootanim_creator)]
+                    ("Boot Animation Creator", self.launch_bootanim_creator),
+                    ("App Market", self.launch_foss_market)]
         self._populate_commands_grid(commands)
 
     # --- Feature Implementations & Launchers ---
@@ -407,10 +416,22 @@ class QuickADBApp(QMainWindow):
             lambda: show_super_img_dumper(self)
         )
 
+    def launch_foss_market(self):
+        self._focus_or_launch(
+            'foss_market_window',
+            lambda: run_foss_market()
+        )
+
+    def launch_root_manager(self):
+        self._focus_or_launch(
+            'root_manager_window',
+            lambda: run_root_manager()
+        )
+
     def _focus_or_launch(self, attr: str, factory: Callable):
         """Raise the existing window if visible, otherwise create it via factory."""
         try:
-            window = getattr(self, attr)
+            window = getattr(self, attr, None)
             if window is not None and window.isVisible():
                 window.raise_()
                 window.activateWindow()
@@ -462,7 +483,7 @@ class QuickADBApp(QMainWindow):
         self.log_action("Scanning for devices...", "#00ffff")
         self.refresh_devices_btn.setEnabled(False)
         self.device_combo.setPlaceholderText("Scanning...")
-        
+
         # Use background thread to avoid UI freeze
         self._device_worker = DeviceRefreshWorker()
         self._device_worker.finished.connect(self._on_devices_refreshed)
@@ -471,7 +492,7 @@ class QuickADBApp(QMainWindow):
     def _on_devices_refreshed(self, devices):
         self.refresh_devices_btn.setEnabled(True)
         self.device_combo.setPlaceholderText("No devices, refresh to check")
-        
+
         self._populate_device_combo(devices)
         if not devices:
             self.log_action("No devices found.", "#ff6666")
@@ -525,54 +546,17 @@ class QuickADBApp(QMainWindow):
         self.check_devices()
 
     # --- Versioning & Update Check ---
-    class UpdateCheckerThread(QThread):
-        update_available = pyqtSignal(str, str)
-        no_update = pyqtSignal()
-        error = pyqtSignal(str)
-        def __init__(self, current_version): super().__init__(); self.current_version = current_version
-
-        @staticmethod
-        def _version_tuple(version_text: str) -> Tuple[int, ...]:
-            cleaned = (version_text or "").strip().lstrip("vV")
-            if not cleaned:
-                return (0,)
-            values = []
-            for part in cleaned.split("."):
-                digits = ""
-                for ch in part:
-                    if ch.isdigit():
-                        digits += ch
-                    else:
-                        break
-                values.append(int(digits) if digits else 0)
-            return tuple(values) if values else (0,)
-
-        @classmethod
-        def _is_newer(cls, latest: str, current: str) -> bool:
-            latest_tuple = cls._version_tuple(latest)
-            current_tuple = cls._version_tuple(current)
-            max_len = max(len(latest_tuple), len(current_tuple))
-            latest_padded = latest_tuple + (0,) * (max_len - len(latest_tuple))
-            current_padded = current_tuple + (0,) * (max_len - len(current_tuple))
-            return latest_padded > current_padded
-
-        def run(self):
-            try:
-                response = requests.get(
-                    "https://api.github.com/repos/codefl0w/QuickADB/releases/latest",
-                    headers={
-                        "Accept": "application/vnd.github+json",
-                        "User-Agent": "QuickADB"
-                    },
-                    timeout=8
-                )
-                response.raise_for_status()
-                latest_version = (response.json() or {}).get("tag_name", "").strip()
-                if latest_version and self._is_newer(latest_version, self.current_version):
-                    self.update_available.emit(latest_version, self.current_version)
-                else: self.no_update.emit()
-            except requests.RequestException as e: self.error.emit(f"Could not check for updates: {e}")
-            except Exception as e: self.error.emit(f"An unexpected error occurred: {e}")
+    def _init_updater(self):
+        self.updater = UpdateManager(
+            parent=self,
+            current_version=self.APP_VERSION,
+            app_name="QuickADB",
+            repo_owner="codefl0w",
+            repo_name="QuickADB",
+            releases_url=f"{self.GITHUB_URL}/releases",
+            changelog_url_template=self.CHANGELOG_URL_TEMPLATE,
+            log_callback=self.log_action,
+        )
 
     def fetch_versions(self):
         """Fetches ADB and Fastboot versions in separate threads."""
@@ -593,10 +577,10 @@ class QuickADBApp(QMainWindow):
                 )
 
             result = subprocess.run(
-                [exe_path, command], 
-                capture_output=True, 
-                text=True, 
-                check=False, 
+                [exe_path, command],
+                capture_output=True,
+                text=True,
+                check=False,
                 env=get_clean_env(),
                 creationflags=creationflags
             )
@@ -607,20 +591,9 @@ class QuickADBApp(QMainWindow):
         except Exception as e:
             setattr(self, version_attr, f"Error fetching version: {e}")
 
-    def check_for_update(self):
-        self.update_thread = self.UpdateCheckerThread(self.APP_VERSION)
-        self.update_thread.update_available.connect(self.on_update_available)
-        self.update_thread.no_update.connect(lambda: self.log_action("You're using the latest version.\n"))
-        self.update_thread.error.connect(lambda msg: QMessageBox.critical(self, "Update Check Failed", msg))
-        self.update_thread.start()
-
-    def on_update_available(self, latest_version: str, current_version: str):
-        reply = QMessageBox.question(self, "Update Available",
-            f"A new version ({latest_version}) is available! You are using {current_version}.\n\n"
-            "Would you like to visit the GitHub releases page to download it?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
-            open_url_safe(f"{self.GITHUB_URL}/releases")
+    def check_for_update(self, manual: bool = False):
+        if hasattr(self, "updater"):
+            self.updater.check_for_updates(manual=manual)
 
     # --- Logging ---
 
@@ -660,7 +633,7 @@ class QuickADBApp(QMainWindow):
     def view_github(self): self._open_url(self.GITHUB_URL)
     def view_xda_thread(self): self._open_url(self.XDA_URL)
     def donate(self): self._open_url(self.DONATE_URL) # please?
-    def contact(self): self._open_url(self.CONTACT_URL) 
+    def contact(self): self._open_url(self.CONTACT_URL)
 
     def show_about(self, event=None):
         dialog = QDialog(self)
@@ -671,19 +644,22 @@ class QuickADBApp(QMainWindow):
             f"<p>Version: {self.APP_VERSION} {self.APP_SUFFIX}</p>"
             f"<p>{self.adb_version}</p><p>{self.fastboot_version}</p><hr>"
             f"<p style='font-size: 8pt;'>Credits:<br>"
-            f"- Uses payload-dumper-go by ssut (Apache 2.0)<br>"
-            f"- Uses unsuper to dump super.img files<br>"
-            f"- Developed by fl0w</p>"
+            f"- payload-dumper-go by ssut — payload.bin extraction<br>"
+            f"- SDK Platform Tools by Google - ADB and fastboot binaries<br>"
+            f"- PyQt6 by Riverbank Computing - Python adaptation of Qt6<br>"
+            f"- Magisk by topjohnwu - Magisk internals &amp; logo<br>"
+            f"- All beta testers - Bug detection and improvement suggestions<br><br><br>"
+            f"© 2026 fl0w</p>"
         )
         info_label.setTextFormat(Qt.TextFormat.RichText); info_label.setWordWrap(True)
         layout.addWidget(info_label)
-        
+
         buttons = {"Select Theme": self.show_theme_selector, "What's New?": self.show_whats_new,
-                   "Check for Updates": self.check_for_update, "Close": dialog.close}
+                   "Check for Updates": lambda: self.check_for_update(manual=True), "Close": dialog.close}
         for text, callback in buttons.items():
             btn = QPushButton(text); btn.clicked.connect(callback)
             layout.addWidget(btn)
-        
+
         dialog.exec()
 
     def show_theme_selector(self):
@@ -755,4 +731,3 @@ class QuickADBApp(QMainWindow):
             dialog.exec()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not load 'whatsnew.html':\n{e}")
-

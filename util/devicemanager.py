@@ -1,7 +1,7 @@
 """
 devicemanager.py  –  Centralized multi-device ADB manager.
 
-Singleton that parses `adb devices`, resolves friendly product names,
+Singleton that parses `adb devices` and `fastboot devices`, resolves friendly product names (ADB only),
 tracks the currently selected device, and provides serial args for
 command injection.
 
@@ -66,7 +66,7 @@ class DeviceManager:
         fastboot = ToolPaths.instance().fastboot
         raw_fb = self._run_silent([fastboot, "devices"])
         fb_devices = self._parse_fastboot_devices(raw_fb)
-        
+
         # Only add fastboot devices that don't share a serial with a currently detected ADB device
         # which can happen on some recovery setups
         adb_serials = {d["serial"] for d in self.devices}
@@ -149,8 +149,8 @@ class DeviceManager:
     def _get_product_name(adb: str, serial: str) -> str:
         """Query a device's friendly product name via getprop."""
         out = DeviceManager._run_silent(
-            [adb, "-s", serial, "shell", "getprop", "ro.product.model"]
-        ).strip()
+            [adb, "-s", serial, "shell", "getprop", "ro.product.manufacturer", "&&", "getprop", "ro.product.model"]
+        ).strip().replace("\n", " ")
         if out and "error" not in out.lower():
             return out
         return serial  # fallback to serial

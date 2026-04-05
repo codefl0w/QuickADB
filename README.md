@@ -3,7 +3,6 @@
 
 A powerful GUI wrapper for ADB and Fastboot, built for Android developers and power users. Focused on reliability and speed, it provides one-click flows for common device tasks while keeping advanced tools available for power users.
 
-
 ![Downloads](https://codefl0w.xyz/gh-boards/out/codefl0w/badge/QuickADB/badge_downloads_2.svg)
 ![Stars](https://codefl0w.xyz/gh-boards/out/codefl0w/badge/QuickADB/badge_stars_2.svg)
 [![Platform](https://codefl0w.xyz/gh-boards/out/codefl0w/profile/badge_custom.svg)](#platform-support)
@@ -40,10 +39,7 @@ QuickADB is a portable GUI wrapper for ADB and Fastboot that eliminates the need
 
 ---
 
-
-
 ## Screenshots
-
 
 <img width="2000" height="1500" alt="showcase_new" src="https://github.com/user-attachments/assets/ccd37739-98bd-40eb-86c7-f60b460d57c1" />
 
@@ -114,27 +110,35 @@ For wireless ADB, use the corresponding button in the ADB section of the tool.
 ## Features
 
 ### ADB
+
 Execute the most common ADB commands with a single click: reboot options, wireless ADB pairing via QR or pairing code, sideloading, and more.
 
 ### Fastboot
+
 Execute the most common Fastboot commands with a single click: reboot options, fetching device variables, flashing images, and more.
 
 ### Terminal
+
 A custom terminal with autocomplete support. Search for keywords in output, export the output to a `.txt` file, kill running processes, drag-and-drop files, and navigate command history with arrow keys.
 
 ### Advanced
 
-- **ADB App Manager** - Browse all installed apps. Uninstall, disable, view details, modify permissions, backup and restore APKs, and create or apply debloat presets.
-- **ADB File Explorer** - Browse the full device filesystem. Create, rename, delete, copy, paste, pull and push files, manage `chmod` permissions, preview images, edit text files, execute shell scripts, and manage root directories.
+- **Magisk Manager** - Download Magisk and patch your boot image with a single button click to root your phone easier. Install/disable/enable modules without ever touching your phone.
+- **App Manager** - Browse all installed apps. Uninstall, disable, view details, modify permissions, backup and restore APKs, and create or apply debloat presets.
+- **File Explorer** - Browse the full device filesystem. Create, rename, delete, copy, paste, pull and push files, manage `chmod` permissions, preview images, edit text files, execute shell scripts, and manage root directories.
 - **GSI Flasher** - Detects device state and automatically flashes a GSI ROM, removing unneeded dynamic partitions on demand, without requiring a single manual command.
 - **Partition Manager** - View device partitions, create backups, and flash partition images while the device is powered. _(Requires root)_
 - **Super.img Dumper** - Extract individual partitions from a `super.img` file. Powered by [unsuper](https://github.com/codefl0w/unsuper).
 - **Payload.bin Dumper** - Extract individual partitions from a `payload.bin` file. Powered by [ssut's payload-dumper-go](https://github.com/ssut/payload-dumper-go).
 
+
+
 ### Miscellaneous
 
 - **Device Specifications** - View RAM, storage, Android version, root method, and more at a glance.
 - **Boot Animation Creator** - View, back up, and modify your boot animation. Create a new animation from a GIF or video and flash it, or package it as a Magisk module.
+- **App Market** - Automatically download and install apps on your phone from F-Droid. Supports custom repositories.
+
 > [!NOTE]
 > Boot animation creator requires FFmpeg to run. Please see [FFmpeg.md](https://github.com/codefl0w/QuickADB/blob/main/FFmpeg.md).
 
@@ -163,7 +167,6 @@ If you're building from source, you can add as much .qss themes in the themes/ d
 
 **Default** - Resets widget styles, forcing them to inherit the OS' design language instead.
 
-
 ---
 
 ## Changelog
@@ -189,17 +192,24 @@ Please follow the existing code style and make sure the code runs on at least on
 
 ---
 
+
 ## Credits
 
+
 - [payload-dumper-go](https://github.com/ssut/payload-dumper-go) by ssut — payload.bin extraction
+
 - [SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools#downloads) by Google - ADB and fastboot binaries
+
 - [PyQt6](https://www.riverbankcomputing.com/software/pyqt) by Riverbank Computing - Python adaptation of Qt6
+
+- [Magisk](https://github.com/topjohnwu/Magisk) by topjohnwu - Magisk internals & logo
+
+- All beta testers - Bug detection and improvement suggestions
 
 
 ---
 
 ## Donate
-
 
 If QuickADB has been useful to you, please consider supporting its development via Buy Me a Coffee or GitHub Sponsors.
 

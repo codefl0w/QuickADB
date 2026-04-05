@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-build.py - Build script for QuickADB. 
+build.py - Build script for QuickADB.
 Downloads external dependancies and uses PyInstaller to compile the tool into a single binary.
 Linux builds are also wrapped into AppImage files.
 
@@ -52,11 +52,11 @@ def extract_targz_payload_dumper(src, dest_dir):
     with gzip.open(src, 'rb') as f_in:
         with open(tar_path, 'wb') as f_out:
             shutil.copyfileobj(f_in, f_out)
-    
+
     # Then extract .tar
     with tarfile.open(tar_path, 'r') as tar_ref:
         tar_ref.extractall(dest_dir)
-    
+
     # Cleanup temp .tar
     if os.path.exists(tar_path):
         os.remove(tar_path)
@@ -66,9 +66,9 @@ def create_linux_appimage():
     appdir = os.path.join(ROOT_DIR, "QuickADB.AppDir")
     if os.path.exists(appdir):
         shutil.rmtree(appdir)
-    
+
     os.makedirs(os.path.join(appdir, "usr/bin"), exist_ok=True)
-    
+
     # 1. Copy PyInstaller output to AppDir
     exe_src = os.path.join(DIST_DIR, "QuickADB")
     exe_dest = os.path.join(appdir, "usr/bin/QuickADB")
@@ -94,7 +94,7 @@ Terminal=false
     icon_src = os.path.join(ROOT_DIR, "res/toolicon.png")
     if os.path.exists(icon_src):
         shutil.copy2(icon_src, os.path.join(appdir, "QuickADB.png"))
-    
+
     # 4. Create AppRun script
     apprun_content = """#!/bin/sh
 SELF=$(readlink -f "$0")
@@ -117,7 +117,7 @@ exec QuickADB "$@"
     # ARCH=x86_64 is required by appimagetool
     env = os.environ.copy()
     env["ARCH"] = "x86_64"
-    
+
     # Running with --appimage-extract-and-run for GitHub Actions support (FUSE-less environments)
     cmd = [tool_path, "--appimage-extract-and-run", "--comp", "zstd", appdir]
     try:
@@ -130,13 +130,13 @@ def cleanup_processes():
     """Terminated known background processes to avoid file locking on Windows."""
     if platform.system() != "Windows":
         return
-    
+
     processes = ["adb.exe", "fastboot.exe", "payload-dumper-go.exe", "QuickADB.exe"]
     print("Cleaning up background processes...")
     for proc in processes:
         try:
             # taskkill /F /IM <proc> /T
-            subprocess.run(["taskkill", "/F", "/IM", proc, "/T"], 
+            subprocess.run(["taskkill", "/F", "/IM", proc, "/T"],
                            capture_output=True, check=False)
         except Exception:
             pass
@@ -191,15 +191,15 @@ def main():
     # 2. Download and Extract Payload Dumper Go
     pd_targz = os.path.join(ROOT_DIR, "payload-dumper-go.tar.gz")
     download_file(PAYLOAD_DUMPER_URLS[os_name], pd_targz)
-    
+
     temp_pd_dir = os.path.join(ROOT_DIR, "temp_pd")
     os.makedirs(temp_pd_dir, exist_ok=True)
     extract_targz_payload_dumper(pd_targz, temp_pd_dir)
-    
+
     binary_name = "payload-dumper-go"
     if os_name == "Windows":
         binary_name += ".exe"
-    
+
     src_binary = os.path.join(temp_pd_dir, binary_name)
     if not os.path.exists(src_binary):
         for root, dirs, files in os.walk(temp_pd_dir):
@@ -207,7 +207,7 @@ def main():
                 if f.startswith("payload-dumper-go"):
                     src_binary = os.path.join(root, f)
                     break
-    
+
     if os.path.exists(src_binary):
         dest_binary = os.path.join(UTIL_DIR, binary_name)
         os.makedirs(UTIL_DIR, exist_ok=True)
@@ -233,7 +233,7 @@ def main():
     print("Starting PyInstaller build...")
     spec_path = os.path.join(ROOT_DIR, "QuickADB.spec")
     build_cmd = ["pyinstaller", "--noconfirm", spec_path]
-    
+
     try:
         subprocess.run(build_cmd, check=True, cwd=ROOT_DIR)
         print("PyInstaller build completed successfully!")

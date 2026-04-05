@@ -10,8 +10,8 @@ import time
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-    QMessageBox, QTabWidget, QWidget, QApplication
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QMessageBox, QTabWidget, QWidget
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QPixmap, QImage
@@ -43,21 +43,21 @@ class AutoConnectWorker(QThread):
     def run(self):
         if not Zeroconf: return
         self.zeroconf = Zeroconf()
-        
+
         browser = ServiceBrowser(
-            self.zeroconf, 
-            "_adb-tls-connect._tcp.local.", 
+            self.zeroconf,
+            "_adb-tls-connect._tcp.local.",
             handlers=[self._on_service_added]
         )
-        
+
         # Timeout safety (20 seconds)
-        timeout = 40 
+        timeout = 40
         while not self.stop_requested and not self.is_connected and timeout > 0:
             time.sleep(0.5)
             timeout -= 1
-            
+
         self._cleanup()
-        
+
         if not self.is_connected and not self.stop_requested:
             self.error_occurred.emit("Timed out waiting for device connection broadcast.")
 
@@ -71,7 +71,7 @@ class AutoConnectWorker(QThread):
     def _on_service_added(self, zeroconf, service_type, name, state_change):
         if self.stop_requested or state_change != ServiceStateChange.Added or self.is_connected:
             return
-            
+
         info = zeroconf.get_service_info(service_type, name)
         if not info or not info.addresses:
             return
@@ -81,7 +81,7 @@ class AutoConnectWorker(QThread):
         if ip == self.target_ip:
             address = f"{ip}:{info.port}"
             flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            
+
             try:
                 subprocess.run([self.adb_cmd, "connect", address], capture_output=True, creationflags=flags)
                 self.is_connected = True
@@ -104,7 +104,7 @@ class WirelessADBWorker(QThread):
         self.service_name = service_name
         self.password = password
         self.adb_cmd = adb_cmd
-        
+
         self.zeroconf = None
         self.is_paired = False
         self.is_connected = False
@@ -112,21 +112,21 @@ class WirelessADBWorker(QThread):
 
     def run(self):
         if not Zeroconf:
-            self.error_occurred.emit("Dependency 'zeroconf' is missing.\nPlease install zeroconf.")
+            self.error_occurred.emit("Dependency 'zeroconf' is missing.\nPlease install zeroconf.") # Debugging
             return
 
         self.zeroconf = Zeroconf()
         self.status_update.emit("Listening for pairing service...")
-        
+
         self.browser_pair = ServiceBrowser(
-            self.zeroconf, 
-            "_adb-tls-pairing._tcp.local.", 
+            self.zeroconf,
+            "_adb-tls-pairing._tcp.local.",
             handlers=[self._on_service_added]
         )
-        
+
         while not self.stop_requested and not self.is_connected:
             time.sleep(0.5)
-            
+
         self._cleanup()
 
     def stop(self):
@@ -139,7 +139,7 @@ class WirelessADBWorker(QThread):
     def _on_service_added(self, zeroconf, service_type, name, state_change):
         if self.stop_requested or state_change != ServiceStateChange.Added:
             return
-            
+
         info = zeroconf.get_service_info(service_type, name)
         if not info:
             return
@@ -147,7 +147,7 @@ class WirelessADBWorker(QThread):
         if service_type == "_adb-tls-pairing._tcp.local." and not self.is_paired:
             self.status_update.emit("Found device! Pairing...")
             self._attempt_pair(info)
-            
+
         elif service_type == "_adb-tls-connect._tcp.local." and self.is_paired:
             self.status_update.emit("Pairing confirmed! Connecting...")
             self._attempt_connect(info)
@@ -158,11 +158,11 @@ class WirelessADBWorker(QThread):
 
         address = f"{ip}:{info.port}"
         flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-        
+
         try:
             cmd = [self.adb_cmd, "pair", address, self.password]
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15, creationflags=flags)
-            
+
             if "Successfully paired" in proc.stdout:
                 self.is_paired = True
                 self.paired_success.emit()
@@ -178,7 +178,7 @@ class WirelessADBWorker(QThread):
 
         address = f"{ip}:{info.port}"
         flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-        
+
         try:
             subprocess.run([self.adb_cmd, "connect", address], capture_output=True, creationflags=flags)
             self.is_connected = True
@@ -204,7 +204,7 @@ class ManualPairWorker(QThread):
         try:
             cmd = [self.adb_cmd, "pair", self.address, self.pin]
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=16, creationflags=flags)
-            
+
             if "Successfully paired" in proc.stdout:
                 target_ip = self.address.split(':')[0]
                 self.finished.emit(True, proc.stdout, target_ip)
@@ -233,15 +233,15 @@ class WirelessADBDialog(QDialog):
 
         main_layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
-        
+
         # --- 1. QR Pair Tab ---
         self.qr_tab = QWidget()
         qr_layout = QVBoxLayout(self.qr_tab)
-        
+
         self.qr_img_label = QLabel()
         self.qr_img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.qr_img_label.setFixedSize(300, 300)
-        
+
         qr_center_layout = QHBoxLayout()
         qr_center_layout.addStretch()
         qr_center_layout.addWidget(self.qr_img_label)
@@ -259,12 +259,12 @@ class WirelessADBDialog(QDialog):
         qr_layout.addWidget(self.status_label)
 
         self.tabs.addTab(self.qr_tab, "QR Connect (Android 11+)")
-        
+
         # --- 2. Pairing Code Tab ---
         self.code_tab = QWidget()
         code_layout = QVBoxLayout(self.code_tab)
         code_layout.addStretch()
-        
+
         code_label = QLabel("Enter Pairing Code Details from Device:")
         code_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         code_layout.addWidget(code_label)
@@ -277,11 +277,11 @@ class WirelessADBDialog(QDialog):
         self.code_pin_entry.setPlaceholderText("6-Digit Wi-Fi Pairing Code")
         self.code_pin_entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.code_pin_entry.setFixedWidth(270)
-        
+
         code_input_layout = QVBoxLayout()
         code_input_layout.addWidget(self.code_address_entry)
         code_input_layout.addWidget(self.code_pin_entry)
-        
+
         code_center_layout = QHBoxLayout()
         code_center_layout.addStretch()
         code_center_layout.addLayout(code_input_layout)
@@ -291,17 +291,17 @@ class WirelessADBDialog(QDialog):
         pair_code_button = QPushButton("Pair & Connect")
         pair_code_button.setFixedWidth(140)
         pair_code_button.clicked.connect(self._pair_with_code)
-        
+
         code_btn_layout = QHBoxLayout()
         code_btn_layout.addStretch()
         code_btn_layout.addWidget(pair_code_button)
         code_btn_layout.addStretch()
         code_layout.addLayout(code_btn_layout)
-        
+
         self.code_status_label = QLabel("")
         self.code_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         code_layout.addWidget(self.code_status_label)
-        
+
         code_layout.addStretch()
         self.tabs.addTab(self.code_tab, "Pairing Code")
 
@@ -309,7 +309,7 @@ class WirelessADBDialog(QDialog):
         self.manual_tab = QWidget()
         manual_layout = QVBoxLayout(self.manual_tab)
         manual_layout.addStretch()
-        
+
         manual_label = QLabel("Enter Device Address (HOST:PORT):")
         manual_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         manual_layout.addWidget(manual_label)
@@ -318,7 +318,7 @@ class WirelessADBDialog(QDialog):
         self.address_entry.setPlaceholderText("e.g., 192.168.1.100:5555")
         self.address_entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.address_entry.returnPressed.connect(self._connect_wireless_adb_manual)
-        
+
         manual_center_layout = QHBoxLayout()
         manual_center_layout.addStretch()
         manual_center_layout.addWidget(self.address_entry)
@@ -328,7 +328,7 @@ class WirelessADBDialog(QDialog):
         connect_button = QPushButton("Connect")
         connect_button.setFixedWidth(120)
         connect_button.clicked.connect(self._connect_wireless_adb_manual)
-        
+
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         btn_layout.addWidget(connect_button)
@@ -337,9 +337,9 @@ class WirelessADBDialog(QDialog):
         manual_layout.addStretch()
 
         self.tabs.addTab(self.manual_tab, "Manual Connect")
-        
+
         main_layout.addWidget(self.tabs)
-        
+
         # Bottom controls
         bottom_layout = QHBoxLayout()
         self.cancel_btn = QPushButton("Close")
@@ -361,12 +361,12 @@ class WirelessADBDialog(QDialog):
             qr.add_data(payload)
             qr.make(fit=True)
             pil_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-            
+
             data = pil_img.tobytes("raw", "RGB")
             qim = QImage(data, pil_img.width, pil_img.height, pil_img.width * 3, QImage.Format.Format_RGB888).copy()
             pix = QPixmap.fromImage(qim).scaled(280, 280, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.qr_img_label.setPixmap(pix)
-            
+
             self.worker = WirelessADBWorker(service_name, password, self.adb_cmd)
             self.worker.status_update.connect(self.status_label.setText)
             self.worker.paired_success.connect(self._on_paired)
@@ -403,7 +403,7 @@ class WirelessADBDialog(QDialog):
         if success:
             self.code_status_label.setStyleSheet("color: #2E8B57; font-weight: bold;")
             self.code_status_label.setText("Paired! Auto-connecting...")
-            
+
             # Start lightweight auto-connector
             self.auto_worker = AutoConnectWorker(target_ip, self.adb_cmd)
             self.auto_worker.connected_success.connect(self._on_connected)
@@ -422,9 +422,9 @@ class WirelessADBDialog(QDialog):
         self.status_label.setStyleSheet("font-weight: bold; color: #008000;")
         self.code_status_label.setText(f"Connected to {address}!")
         self.code_status_label.setStyleSheet("font-weight: bold; color: #008000;")
-        
+
         QMessageBox.information(self, "Wireless ADB", f"Successfully connected to {address}")
-        
+
         if hasattr(self.parent_app, 'refresh_devices'):
             QTimer.singleShot(500, self.parent_app.refresh_devices)
         self.accept()

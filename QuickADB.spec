@@ -2,7 +2,7 @@
 
 # -*- mode: python ; coding: utf-8 -*-
 import sys
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_dynamic_libs
 
 block_cipher = None
 
@@ -11,19 +11,26 @@ hiddenimports = (
     collect_submodules('modules') +
     collect_submodules('res') +
     collect_submodules('themes') +
-    collect_submodules('util')
+    collect_submodules('util') +
+    collect_submodules('PIL')
 )
+
+datas = [
+    ('platform-tools/*', 'platform-tools'),
+    ('res/*', 'res'),
+    ('themes/*', 'themes'),
+    ('util/*', 'util'),
+]
+datas += collect_data_files('PIL')
+
+binaries = []
+binaries += collect_dynamic_libs('PIL')
 
 a = Analysis(
     ['main.py'],
     pathex=['.'],
-    binaries=[],
-    datas=[
-        ('platform-tools/*', 'platform-tools'),
-        ('res/*', 'res'),
-        ('themes/*', 'themes'),
-        ('util/*', 'util'),
-    ],
+    binaries=binaries,
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
@@ -52,7 +59,7 @@ exe = EXE(
     [],
     name='QuickADB',
     console=False,
-    disable_windowed_traceback=True,
+    disable_windowed_traceback=False,
     hide_console='hide-early',
     debug=False,
     strip=False,

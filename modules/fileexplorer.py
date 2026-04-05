@@ -334,7 +334,7 @@ class ADBFileExplorer(QMainWindow):
         self.table.cellDoubleClicked.connect(self.handle_double_click)
         self.table.horizontalHeader().sectionClicked.connect(self.header_clicked)
 
-       
+
         self._sort_order = Qt.SortOrder.AscendingOrder
 
     # -----------------------------
@@ -404,7 +404,7 @@ class ADBFileExplorer(QMainWindow):
         else:
             cmd = ['shell', f'ls -la "{self.current_path}" 2>&1']
 
-      
+
         ls_thread = ADBThread(self.adb_path, cmd)
         ls_thread.command_finished.connect(self.process_directory_listing)
         self._start_thread(ls_thread)
@@ -572,7 +572,7 @@ class ADBFileExplorer(QMainWindow):
             if self.is_root:
                 device_temp = f"/data/local/tmp/{filename}"
                 dd_cmd = f'su -c "dd if=\\"{full_path}\\" of=\\"{device_temp}\\" && chmod 644 \\"{device_temp}\\""'
-        
+
                 dd_thread = ADBThread(self.adb_path, ['shell', dd_cmd])
                 dd_thread.command_finished.connect(
                     lambda out, err: self.pull_temp_image(out, err, filename, device_temp, temp_path)
@@ -585,7 +585,7 @@ class ADBFileExplorer(QMainWindow):
         else:
             self.statusBar.showMessage(f"Loading contents of {filename}...")
             shell_cmd = f'su -c "cat \\"{full_path}\\""' if self.is_root else f'cat "{full_path}"'
-    
+
             t = ADBThread(self.adb_path, ['shell', shell_cmd])
             t.command_finished.connect(lambda out, err: self.display_file_contents(filename, out, err))
             self._start_thread(t)
@@ -733,7 +733,7 @@ class ADBFileExplorer(QMainWindow):
         if self.is_root:
             device_temp = f"/data/local/tmp/{filename}"
             dd_cmd = f'su -c "dd if=\\"{full_path}\\" of=\\"{device_temp}\\" && chmod 644 \\"{device_temp}\\""'
-    
+
             t = ADBThread(self.adb_path, ['shell', dd_cmd])
             t.command_finished.connect(lambda out, err: self.pull_temp_file(out, err, filename, device_temp, save_path))
             self._start_thread(t)
@@ -934,6 +934,7 @@ class ADBFileExplorer(QMainWindow):
             self.statusBar.showMessage(f"Created folder {folder_name}")
             self.refresh_file_list()
 
+
     def create_new_file(self):
         file_name, ok = QInputDialog.getText(self, "New File", "Enter file name:")
         if not ok or not file_name:
@@ -955,6 +956,19 @@ class ADBFileExplorer(QMainWindow):
             self.statusBar.showMessage(f"Created file {file_name}")
             self.refresh_file_list()
 
+
+    def install_apk(self, name):
+        if not name.endswith('.apk'):
+            return
+        full_path = self._dpath(self.current_path, name)
+        install_cmd = self._root_cmd(f'pm install -r \\"{full_path}\\"') if self.is_root else f'pm install -r "{full_path}"'
+        install_thread = ADBThread(self.adb_path, ['shell', install_cmd])
+        install_thread.command_finished.connect(
+            lambda out, err: self._handle_install_apk_result(out, err, name)
+        )
+        self.statusBar.showMessage(f"Installing APK {name}...")
+        self._start_thread(install_thread)
+
     def execute_shell_script(self, name):
         if not name.endswith('.sh'):
             return
@@ -963,13 +977,96 @@ class ADBFileExplorer(QMainWindow):
             chmod_cmd = self._root_cmd(f'chmod +x \\"{full_path}\\"')
             chmod_thread = ADBThread(self.adb_path, ['shell', chmod_cmd])
             chmod_thread.command_finished.connect(
-                lambda out, err: self._run_script(['shell', f'su -c "sh \\"{full_path}\\""'], name) if not err else None
+                lambda out, err: self._handle_root_script_prepare(out, err, full_path, name)
             )
             self._start_thread(chmod_thread)
         else:
-            self._run_script(['shell', f'sh "{full_path}"'], name)
+            self._run_live_command(
+                ['shell', f'sh "{full_path}"'],
+                title=f"Executing: {name}",
+                header_html=f"Output of <b>{name}</b>",
+                success_status=f"Script {name} executed successfully.",
+                error_status=f"Script {name} finished with errors."
+            )
+
+    def _handle_root_script_prepare(self, output, error, full_path, name):
+        if error:
+            QMessageBox.critical(self, "Error", f"Failed to prepare script {name}: {output}")
+            self.statusBar.showMessage(f"Script {name} could not be prepared.")
+            return
+
+        self._run_live_command(
+            ['shell', self._root_cmd(f'sh \\"{full_path}\\"')],
+            title=f"Executing: {name}",
+            header_html=f"Output of <b>{name}</b>",
+            success_status=f"Script {name} executed successfully.",
+            error_status=f"Script {name} finished with errors."
+        )
+
+    def _handle_install_apk_result(self, output, error, name):
+        if error:
+            QMessageBox.critical(self, "Install APK", f"Failed to install {name}:\n\n{output}")
+            self.statusBar.showMessage(f"APK {name} failed to install.")
+            return
+
+        self.statusBar.showMessage(f"APK {name} installed successfully.")
+        self.refresh_file_list()
+
+    def _run_live_command(self, cmd_args: list, title: str, header_html: str, success_status: str, error_status: str):
+        """Open a live output dialog and stream command output into it."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setMinimumSize(700, 450)
+        dialog.setModal(False)
+
+        layout = QVBoxLayout(dialog)
+
+        header = QLabel(header_html)
+        header.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(header)
+
+        output_view = QPlainTextEdit()
+        output_view.setReadOnly(True)
+        output_view.setFont(QFont("Courier New", 9))
+        layout.addWidget(output_view)
+
+        close_btn = QPushButton("Close")
+        close_btn.setEnabled(False)
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+        dialog.show()
+
+        runner = TransferRunner(self.adb_path, cmd_args)
+
+        def _on_line(line: str):
+            output_view.appendPlainText(line)
+            output_view.ensureCursorVisible()
+
+        def _on_done(last_line: str, is_error: bool, _dest: str):
+            if is_error:
+                output_view.appendPlainText("\n[X] Command exited with an error.")
+                self.statusBar.showMessage(error_status)
+            else:
+                output_view.appendPlainText("\n[OK] Done.")
+                self.statusBar.showMessage(success_status)
+            close_btn.setEnabled(True)
+            self.refresh_file_list()
+
+        runner.transfer_progress.connect(_on_line)
+        runner.transfer_finished.connect(_on_done)
+        self._start_thread(runner)
 
     def _run_script(self, cmd_args: list, name: str):
+        self._run_live_command(
+            cmd_args,
+            title=f"Executing: {name}",
+            header_html=f"Output of <b>{name}</b>",
+            success_status=f"Script {name} executed successfully.",
+            error_status=f"Script {name} finished with errors."
+        )
+        return
+
         """Open a live output dialog and stream script execution into it."""
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Executing: {name}")
@@ -1014,6 +1111,7 @@ class ADBFileExplorer(QMainWindow):
         runner.transfer_finished.connect(_on_done)
         self._start_thread(runner)
 
+
     # -----------------------------
     # Context menu and selections
     # -----------------------------
@@ -1043,6 +1141,9 @@ class ADBFileExplorer(QMainWindow):
 
         if not is_folder and selected_name.endswith('.sh'):
             menu.addAction("Execute Script", lambda: self.execute_shell_script(selected_name))
+
+        if not is_folder and selected_name.endswith('.apk'):
+            menu.addAction("Install APK", lambda: self.install_apk(selected_name))
 
         menu.addAction("Permissions (chmod)", lambda: self.show_chmod_dialog(selected_name, is_folder))
         menu.addSeparator()
