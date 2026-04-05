@@ -4,7 +4,7 @@ The changelog only includes what's new. To read feature descriptions, see [Featu
 For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md).
 
 
-# [5.0.0] - 29.03.2026
+# [5.0.0] - 05.04.2026
 
 ### Added
 
