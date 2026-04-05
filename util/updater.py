@@ -41,6 +41,7 @@ from util.resource import open_url_safe, resource_path
 
 
 GITHUB_API_VERSION = "2026-03-10"
+FUTURE_CHANGELOG_URL = "https://raw.githubusercontent.com/codefl0w/QuickADB/refs/heads/main/res/whatsnew.html"
 
 
 def _format_size(num_bytes: int) -> str:
@@ -143,8 +144,8 @@ class UpdateCheckWorker(QThread):
     def _fetch_remote_changelog(self, release_version: str) -> str:
         if "{ref}" in self.changelog_url_template:
             candidate_urls = [
+                FUTURE_CHANGELOG_URL,
                 self.changelog_url_template.format(ref=release_version),
-                self.changelog_url_template.format(ref="refs/heads/main"),
             ]
         else:
             candidate_urls = [self.changelog_url_template]
