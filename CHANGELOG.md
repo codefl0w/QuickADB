@@ -3,6 +3,20 @@ The changelog only includes what's new. To read feature descriptions, see [Featu
 
 For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md).
 
+# [5.1.0] - 09.04.2026
+
+### Added
+
+- Live Logcat: live ADB logcat viewer with exporting, color coding and level filtering (Advanced)
+
+### Fixed
+
+- File Explorer: fix metadata parsing in special root directories
+
+### Improved
+
+- Device Info: seperate information into 3 categories: Hardware, Android, Device Specs
+- Device Info: add 8 new checks
 
 # [5.0.0] - 05.04.2026
 
@@ -16,7 +30,6 @@ For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blo
 - Updater: move function from quickadb.py to standalone updater.py
 - QuickADB: changed button order in the advanced section
 - QuickADB: update & improve credits
-
 
 ### Improved
 
@@ -42,11 +55,9 @@ For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blo
 - GSI Flasher: Removed support for compressed GSI images (.img.gz, .img.xz)
 - Wireless ADB: fixed freezing on 15-second timeout
 
-
 ### Improved
 
 - File Explorer: Refactored code to eliminate duplication and redundancy
-
 
 # [4.0.2] - 14.03.2026
 
@@ -63,8 +74,6 @@ For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blo
 
 - File Explorer: Added many new viewable text file extensions
 
-
-
 # [4.0.1] - 13.03.2026
 
 ### Added
@@ -78,8 +87,6 @@ For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blo
 ### Fixed
 
 - Boot Animation Creator: FFmpeg PATH detection
-
-
 
 # [4.0.0] - 10.03.2026
 

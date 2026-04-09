@@ -97,6 +97,7 @@ class CommandRunner(QThread):
 
 class DeviceInfoWorker(QThread):
     info_ready = pyqtSignal(str)
+    SECTION_SEPARATOR = "=" * 36
 
     def __init__(self, platform_tools_path):
         super().__init__()
@@ -104,7 +105,7 @@ class DeviceInfoWorker(QThread):
         self.adb_path = ToolPaths.instance().adb
 
     def run(self):
-        commands = self._get_device_commands()
+        command_sections = self._get_device_commands()
         results = []
 
         # Windows specific: Create a new process group and hide the console window.
@@ -115,50 +116,74 @@ class DeviceInfoWorker(QThread):
                 subprocess.CREATE_NO_WINDOW
             )
 
-        for label, command in commands.items():
-            try:
-                result = subprocess.run(
-                    command, 
-                    stdout=subprocess.PIPE, 
-                    stderr=subprocess.PIPE, 
-                    text=True, 
-                    shell=True,
-                    timeout=10,
-                    creationflags=creationflags
-                )
-                
-                if result.returncode == 0:
-                    output = result.stdout.strip()
-                    formatted_output = self._format_output(label, output)
-                    results.append(f"{label}: {formatted_output}")
-                else:
-                    results.append(f"{label}: Error - {result.stderr.strip()}")
-                    
-            except subprocess.TimeoutExpired:
-                results.append(f"{label}: Timeout")
-            except Exception as e:
-                results.append(f"{label}: Error - {str(e)}")
+        for section_name, commands in command_sections:
+            results.append(self.SECTION_SEPARATOR)
+            results.append(section_name.upper())
+            results.append(self.SECTION_SEPARATOR)
 
-        self.info_ready.emit("\n".join(results))
+            for label, command in commands:
+                try:
+                    result = subprocess.run(
+                        command,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        shell=True,
+                        timeout=10,
+                        creationflags=creationflags
+                    )
+
+                    if result.returncode == 0:
+                        output = result.stdout.strip()
+                        formatted_output = self._format_output(label, output)
+                        results.append(f"{label}: {formatted_output}")
+                    else:
+                        results.append(f"{label}: Error - {result.stderr.strip()}")
+
+                except subprocess.TimeoutExpired:
+                    results.append(f"{label}: Timeout")
+                except Exception as e:
+                    results.append(f"{label}: Error - {str(e)}")
+
+            results.append("")
+
+        self.info_ready.emit("\n".join(results).strip())
 
     def _get_device_commands(self):
         from util.devicemanager import DeviceManager
         serial_flag = DeviceManager.instance().serial_flag()
         adb_cmd = f'"{self.adb_path}" {serial_flag}'
-        return {
-            "Fingerprint": f"{adb_cmd} shell getprop ro.build.fingerprint",
-            "Board": f"{adb_cmd} shell getprop ro.product.board",
-            "Build ID": f"{adb_cmd} shell getprop ro.build.id",
-            "Android Version": f"{adb_cmd} shell getprop ro.build.version.release",
-            "Manufacturer": f"{adb_cmd} shell getprop ro.product.manufacturer",
-            "Model": f"{adb_cmd} shell getprop ro.product.model",
-            "Product Name": f"{adb_cmd} shell getprop ro.product.name",
-            "Architecture": f"{adb_cmd} shell getprop ro.product.cpu.abi",
-            "Resolution": f"{adb_cmd} shell wm size",
-            "Total RAM": f"{adb_cmd} shell cat /proc/meminfo",
-            "Total Storage": f"{adb_cmd} shell df",
-            "Root Method": f"{adb_cmd} shell su -v"
-        }
+        return [
+            ("Hardware Info", [
+                ("Board", f"{adb_cmd} shell getprop ro.product.board"),
+                ("Chipset", f"{adb_cmd} shell getprop ro.hardware"),
+                ("Architecture", f"{adb_cmd} shell getprop ro.product.cpu.abi"),
+                ("Serial Number", f"{adb_cmd} shell getprop ro.serialno"),
+                ("Resolution", f"{adb_cmd} shell wm size"),
+                ("Total RAM", f"{adb_cmd} shell cat /proc/meminfo"),
+                ("Total Storage", f"{adb_cmd} shell df"),
+            ]),
+            ("Android Info", [
+                ("Android Version", f"{adb_cmd} shell getprop ro.build.version.release"),
+                ("SDK Version", f"{adb_cmd} shell getprop ro.build.version.sdk"),
+                ("Minimum SDK", f"{adb_cmd} shell getprop ro.build.version.min_supported_target_sdk"),
+                ("Build ID", f"{adb_cmd} shell getprop ro.build.id"),
+                ("Build Type", f"{adb_cmd} shell getprop ro.build.type"),
+                ("Build Date", f"{adb_cmd} shell getprop ro.build.date"),
+                ("Security Patch", f"{adb_cmd} shell getprop ro.build.version.security_patch"),
+                ("Treble Support", f"{adb_cmd} shell getprop ro.treble.enabled"),
+                ("A/B Support", f"{adb_cmd} shell getprop ro.build.ab_update"),
+                ("Dynamic Partitions", f"{adb_cmd} shell getprop ro.boot.dynamic_partitions"),
+                ("Fingerprint", f"{adb_cmd} shell getprop ro.build.fingerprint"),
+            ]),
+            ("Device Specs", [
+                ("Manufacturer", f"{adb_cmd} shell getprop ro.product.manufacturer"),
+                ("Model", f"{adb_cmd} shell getprop ro.product.model"),
+                ("Product Name", f"{adb_cmd} shell getprop ro.product.name"),
+                ("Carrier", f"{adb_cmd} shell getprop ro.carrier"),
+                ("Root Method", f"{adb_cmd} shell su -v"),
+            ]),
+        ]
 
     def _format_output(self, label, output):
         # Human-readable sizes

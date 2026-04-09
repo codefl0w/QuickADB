@@ -24,6 +24,7 @@ from modules.terminal import show_terminal_window
 from modules.payloaddumper import show_payload_dumper_window
 from modules.fossmarket import run_foss_market
 from modules.gsiflasher import GSIFlasherUI
+from modules.logcat import run_logcat_window
 from modules.magiskmanager import run_root_manager
 from modules.superdumper import show_super_img_dumper
 from modules.fileexplorer import ADBFileExplorer
@@ -64,7 +65,7 @@ class QuickADBApp(QMainWindow):
     # Main window
 
     # Constants
-    APP_VERSION = "V5.0.0"
+    APP_VERSION = "V5.1.0"
     APP_SUFFIX = "Full"
     BUTTON_WIDTH = 150
     BUTTON_HEIGHT = 40
@@ -72,7 +73,7 @@ class QuickADBApp(QMainWindow):
     XDA_URL = "https://xdaforums.com/t/new-quickadb-v4-adb-app-manager-file-explorer-gsi-flasher-and-more.4781847/"
     DONATE_URL = "https://buymeacoffee.com/fl0w" # please?
     CONTACT_URL = "https://codefl0w.xyz/contact"
-    CHANGELOG_URL_TEMPLATE = "https://raw.githubusercontent.com/codefl0w/QuickADB/{ref}/res/whatsnew.html"
+    CHANGELOG_URL_TEMPLATE = "https://raw.githubusercontent.com/codefl0w/QuickADB/refs/heads/main/res/whatsnew.html"
 
     def __init__(self):
         super().__init__()
@@ -91,6 +92,7 @@ class QuickADBApp(QMainWindow):
         self.partition_manager = None
         self.bootanim_creator_window = None
         self.foss_market_window = None
+        self.logcat_window = None
 
         # Init
         self.init_ui()
@@ -292,7 +294,6 @@ class QuickADBApp(QMainWindow):
     # --- Command Button Sections ---
 
     def show_adb_commands(self): # If a command can be executed without needing a path (e.g. adb devices), it's executed directly. Otherwise, it's executed by adbfunc.py.
-        """Populates the grid with ADB command buttons."""
         commands = [
             ("Check for Devices", lambda: self.run_command_async("adb devices", "Check for Devices", "ADB")),
             ("Kill ADB Server", lambda: self.run_command_async("adb kill-server", "Kill ADB Server", "ADB")),
@@ -313,7 +314,6 @@ class QuickADBApp(QMainWindow):
         self._populate_commands_grid(commands)
 
     def show_fastboot_commands(self):
-        """Populates the grid with Fastboot command buttons."""
         commands = [
             ("List Devices", lambda: self.run_command_async("fastboot devices", "List Fastboot Devices", "Fastboot")),
             ("Get All Variables", lambda: self.run_command_async("fastboot getvar all", "Get All Variables", "Fastboot")),
@@ -334,7 +334,6 @@ class QuickADBApp(QMainWindow):
         self._populate_commands_grid(commands)
 
     def show_flashing_commands(self):
-        """Populates the grid with partition flashing command buttons."""
         partitions = [
             "boot", "init_boot", "system", "vbmeta", "vbmeta_system", "vbmeta_vendor",
             "cust", "userdata", "preloader (⚠️)", "logo", "super", "recovery", "dtbo",
@@ -347,13 +346,13 @@ class QuickADBApp(QMainWindow):
         self._populate_commands_grid(commands, items_per_row=4)
 
     def show_advanced(self):
-        """Populates the grid with advanced tool buttons."""
         commands = [
             ("Magisk Manager", self.launch_root_manager),
             ("App Manager", self.launch_app_manager),
             ("File Explorer", self.open_file_explorer),
             ("GSI Flasher", self.open_gsi_flasher),
             ("Partition Manager (#)", self.open_partition_manager),
+            ("Live Logcat", self.launch_logcat),
             ("Dump super.img", self.launch_super_dumper),
             ("Dump payload.bin", self.show_payload_dumper),
         ]
@@ -426,6 +425,12 @@ class QuickADBApp(QMainWindow):
         self._focus_or_launch(
             'root_manager_window',
             lambda: run_root_manager()
+        )
+
+    def launch_logcat(self):
+        self._focus_or_launch(
+            'logcat_window',
+            lambda: run_logcat_window()
         )
 
     def _focus_or_launch(self, attr: str, factory: Callable):

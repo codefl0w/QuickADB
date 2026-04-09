@@ -430,14 +430,14 @@ class ADBFileExplorer(QMainWindow):
                 permission_issue = True
                 continue
 
-            parts = line.split(maxsplit=7)
-            if len(parts) < 8:
+            entry = self._parse_ls_entry(line)
+            if not entry:
                 continue
 
-            perms = parts[0]
-            size = parts[4]
-            date_str = f"{parts[5]} {parts[6]}"
-            name_part = parts[7]
+            perms = entry["perms"]
+            size = entry["size"]
+            date_str = entry["modified"]
+            name_part = entry["name"]
 
             name = ""
             target_path = ""
@@ -492,6 +492,46 @@ class ADBFileExplorer(QMainWindow):
     # -----------------------------
     def detect_type(self, name):
         return name.split(".")[-1].upper() if "." in name else "File"
+
+    def _parse_ls_entry(self, line):
+        """Parse one 'ls -la' row.
+
+        Regular files use:
+            perms links owner group size date time name
+
+        Device nodes under paths like /dev use:
+            perms links owner group major, minor date time name
+        """
+        text = (line or "").strip()
+        if not text:
+            return None
+
+        is_device_node = text.startswith("b") or text.startswith("c")
+        parts = text.split(maxsplit=8 if is_device_node else 7)
+
+        if is_device_node:
+            if len(parts) < 9:
+                return None
+            return {
+                "perms": parts[0],
+                "owner": parts[2],
+                "group": parts[3],
+                "size": "",
+                "modified": f"{parts[6]} {parts[7]}",
+                "name": parts[8],
+            }
+
+        if len(parts) < 8:
+            return None
+
+        return {
+            "perms": parts[0],
+            "owner": parts[2],
+            "group": parts[3],
+            "size": parts[4],
+            "modified": f"{parts[5]} {parts[6]}",
+            "name": parts[7],
+        }
 
     def safe_int(self, s):
         try:
@@ -1324,12 +1364,12 @@ class ADBFileExplorer(QMainWindow):
             QMessageBox.critical(self, "Error", "No file information found")
             return
 
-        parts = lines[0].split()
-        if len(parts) < 5:
+        entry = self._parse_ls_entry(lines[0])
+        if not entry:
             QMessageBox.critical(self, "Error", "Invalid file information format")
             return
 
-        size = self.format_size_safe(parts[4])
+        size = self.format_size_safe(entry["size"])
         file_type = self.detect_type(name)
         self.display_properties(name, path, file_type, size, ls_output, False)
 
@@ -1338,14 +1378,11 @@ class ADBFileExplorer(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to get item properties: {ls_output}")
             return
         permissions = owner = modified = "Unknown"
-        try:
-            parts = ls_output.strip().splitlines()[0].split(maxsplit=7)
-            if len(parts) >= 8:
-                permissions = parts[0]
-                owner = f"{parts[2]}:{parts[3]}"
-                modified = f"{parts[5]} {parts[6]}"
-        except IndexError:
-            pass
+        entry = self._parse_ls_entry(ls_output.strip().splitlines()[0] if ls_output.strip() else "")
+        if entry:
+            permissions = entry["perms"]
+            owner = f"{entry['owner']}:{entry['group']}"
+            modified = entry["modified"]
         properties = (
             f"Name: {name}\n"
             f"Type: {file_type}\n"
