@@ -53,7 +53,7 @@ QuickADB is a portable GUI wrapper for ADB and Fastboot that eliminates the need
 |----------|--------------------|----------------------------------------------------------------------------------|
 | Windows  | Yes                | Primary target                                                                   |
 | Linux    | Yes                | Some libs may mismatch with your distro and cause issues. If so, create an issue |
-| macOS    | Experimental       | Darwin systems are supported but untested. Testing and feedback required         |
+| macOS    | Yes       | All functions work as expected as per user feedback        |
 
 The latest source is built into executables for all three platforms.
 
