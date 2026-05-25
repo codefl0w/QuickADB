@@ -13,12 +13,12 @@ import os
 import re
 import tempfile
 import shutil
-import zipfile
 import subprocess
 import json
 import concurrent.futures
 from typing import List
 
+from util.apkapi import APKInstallOptions, install_prepared_package, prepare_package_source, supported_package_dialog_filter
 from util.thememanager import ThemeManager
 
 from util.resource import get_root_dir, resource_path
@@ -313,7 +313,7 @@ class AppManagerWorker(QThread):
             executor.map(pull_single_apk, apk_paths)
 
     def restore_apps(self, file_paths: List[str]):
-        """Restore multiple apps from backup ZIP files sequentially."""
+        """Restore multiple apps from APK or archive package files sequentially."""
         if not file_paths:
             self.log_message.emit("No backup files selected for restore.")
             return
@@ -322,29 +322,36 @@ class AppManagerWorker(QThread):
         self.log_message.emit(f"Starting sequential restore of {len(file_paths)} apps...")
         
         all_success = True
-        for index, zip_path in enumerate(file_paths):
-            current_app = os.path.basename(zip_path).replace("backup_", "").replace(".zip", "")
+        for index, package_path in enumerate(file_paths):
+            file_name = os.path.basename(package_path)
+            current_app = os.path.splitext(file_name.replace("backup_", "", 1))[0]
             self.backup_progress.emit(current_app, f"Restoring ({index + 1}/{len(file_paths)})")
             try:
-                with tempfile.TemporaryDirectory(prefix=f"restore_{current_app}_") as temp_dir:
-                    self.backup_progress.emit(current_app, "Extracting ZIP archive")
-                    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                        zip_ref.extractall(temp_dir)
-
-                    apk_files = [os.path.join(root, file) for root, _, files in os.walk(temp_dir) for file in files if file.endswith(".apk")]
-                    if not apk_files:
-                        self.log_message.emit(f"No APKs found in {zip_path}")
+                prepared = prepare_package_source(package_path)
+                try:
+                    if not prepared.apk_paths:
+                        self.log_message.emit(f"No APKs found in {package_path}")
                         all_success = False
                         continue
-                    
-                    self.backup_progress.emit(current_app, f"Installing {len(apk_files)} APK files")
-                    if not self._install_apks(apk_files, current_app):
+
+                    if prepared.install_mode == "multiple":
+                        self.log_message.emit(f"Detected split APK with {len(prepared.apk_paths)} components. Installing together...")
+                        self.backup_progress.emit(current_app, f"Installing split APK ({len(prepared.apk_paths)} components)")
+                    elif prepared.install_mode == "sequential":
+                        self.log_message.emit(f"Installing {len(prepared.apk_paths)} individual APK(s)...")
+                        self.backup_progress.emit(current_app, f"Installing {len(prepared.apk_paths)} APK files")
+                    else:
+                        self.backup_progress.emit(current_app, "Installing APK")
+
+                    if not self._install_prepared_package(prepared, current_app):
                         all_success = False
+                finally:
+                    prepared.cleanup()
                 
                 self.backup_progress.emit(current_app, "Restore completed")
-                self.log_message.emit(f"Completed restore for {os.path.basename(zip_path)}")
+                self.log_message.emit(f"Completed restore for {file_name}")
             except Exception as e:
-                self.log_message.emit(f"Error restoring {zip_path}: {e}")
+                self.log_message.emit(f"Error restoring {package_path}: {e}")
                 self.backup_progress.emit(current_app, f"Error: {str(e)}")
                 all_success = False
 
@@ -352,47 +359,33 @@ class AppManagerWorker(QThread):
         self.backup_progress.emit("all_apps", final_msg)
         self.log_message.emit(final_msg)
 
-    def _install_apks(self, apk_files: List[str], current_app: str = "") -> bool:
-        """Install APK files, handling split APKs correctly."""
-        if not apk_files:
-            return False
-        
-        is_split_apk = len(apk_files) > 1 and any("base.apk" in apk.lower() for apk in apk_files)
-        if is_split_apk:
-            self.log_message.emit(f"Detected split APK with {len(apk_files)} components. Installing together...")
-            self.backup_progress.emit(current_app, f"Installing split APK ({len(apk_files)} components)")
-            command = ['install-multiple', '-r'] + apk_files
-            return self._execute_install_command(command, current_app)
-        else:
-            self.log_message.emit(f"Installing {len(apk_files)} individual APK(s)...")
-            success = True
-            for i, apk in enumerate(apk_files):
-                self.backup_progress.emit(current_app, f"Installing APK {i + 1}/{len(apk_files)}")
-                command = ['install', '-r', apk]
-                if not self._execute_install_command(command, current_app):
-                    success = False
-            return success
-
-    def _execute_install_command(self, command_args: List[str], current_app: str = "") -> bool:
-        """Execute an ADB install command and handle the output."""
+    def _install_prepared_package(self, prepared, current_app: str = "") -> bool:
+        """Execute a prepared package install and emit the same status/log format as before."""
         try:
-            result = self._run_adb_command(command_args)
+            result = install_prepared_package(
+                prepared,
+                options=APKInstallOptions(reinstall=True),
+            )
             
             for line in result.stdout.splitlines():
-                if line.strip(): self.log_message.emit(line.strip())
+                if line.strip():
+                    self.log_message.emit(line.strip())
             
             if result.returncode != 0:
-                stderr_output = result.stderr.strip()
+                stderr_output = (result.stderr or result.stdout).strip()
                 self.log_message.emit(f"Installation failed: {stderr_output}")
-                if current_app: self.backup_progress.emit(current_app, f"Installation failed")
+                if current_app:
+                    self.backup_progress.emit(current_app, "Installation failed")
                 return False
-            else:
-                self.log_message.emit("Installation completed successfully")
-                if current_app: self.backup_progress.emit(current_app, "Installation successful")
-                return True
+
+            self.log_message.emit("Installation completed successfully")
+            if current_app:
+                self.backup_progress.emit(current_app, "Installation successful")
+            return True
         except Exception as e:
             self.log_message.emit(f"Error during APK installation: {e}")
-            if current_app: self.backup_progress.emit(current_app, "Installation error")
+            if current_app:
+                self.backup_progress.emit(current_app, "Installation error")
             return False
 
 
@@ -441,6 +434,7 @@ class AppDetailsDialog(WorkerMixin, QDialog):
         main_layout = QVBoxLayout(self)
         self.tab_widget = QTabWidget()
 
+
         # Details Tab
         self.details_widget = QWidget()
         details_layout = QVBoxLayout(self.details_widget)
@@ -448,6 +442,7 @@ class AppDetailsDialog(WorkerMixin, QDialog):
         self.details_text.setReadOnly(True)
         details_layout.addWidget(self.details_text)
         self.tab_widget.addTab(self.details_widget, "App Details")
+
 
         # Permissions Tab
         self.permissions_widget = QWidget()
@@ -783,7 +778,12 @@ class AppManagerUI(WorkerMixin, QMainWindow):
 
     def restore_apps(self):
         """Restore app(s) from backup."""
-        file_paths, _ = QFileDialog.getOpenFileNames(self, "Select Backup ZIP File(s)", "", "ZIP Files (*.zip)")
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select Backup or Package File(s)",
+            "",
+            supported_package_dialog_filter(),
+        )
         if not file_paths: return
 
         worker = self.create_worker("restore_apps", file_paths=file_paths)

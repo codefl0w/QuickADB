@@ -12,6 +12,7 @@ import tempfile
 import base64
 import re
 
+from util.apkapi import APKInstallOptions, install_remote_package
 from util.resource import get_root_dir, resource_path
 from util.toolpaths import ToolPaths
 root_dir = get_root_dir()
@@ -64,6 +65,29 @@ class ADBThread(QThread):
             self.command_finished.emit(out or str(e), True)
         except Exception as e:
             self.command_finished.emit(str(e), True)
+
+
+class RemoteAPKInstallThread(QThread):
+    """Install an APK that already exists on the device filesystem."""
+
+    install_finished = pyqtSignal(object)
+    install_failed = pyqtSignal(str)
+
+    def __init__(self, remote_path: str, use_root: bool):
+        super().__init__()
+        self.remote_path = remote_path
+        self.use_root = use_root
+
+    def run(self):
+        try:
+            result = install_remote_package(
+                self.remote_path,
+                options=APKInstallOptions(reinstall=True),
+                use_root=self.use_root,
+            )
+            self.install_finished.emit(result)
+        except Exception as exc:
+            self.install_failed.emit(str(exc))
 
 
 class TransferRunner(QThread):
@@ -497,40 +521,60 @@ class ADBFileExplorer(QMainWindow):
         """Parse one 'ls -la' row.
 
         Regular files use:
-            perms links owner group size date time name
-
+            perms links owner group size date time... name
         Device nodes under paths like /dev use:
-            perms links owner group major, minor date time name
+            perms links owner group major, minor date time... name
         """
+        import re
         text = (line or "").strip()
         if not text:
             return None
 
-        is_device_node = text.startswith("b") or text.startswith("c")
-        parts = text.split(maxsplit=8 if is_device_node else 7)
-
-        if is_device_node:
-            if len(parts) < 9:
-                return None
-            return {
-                "perms": parts[0],
-                "owner": parts[2],
-                "group": parts[3],
-                "size": "",
-                "modified": f"{parts[6]} {parts[7]}",
-                "name": parts[8],
-            }
-
-        if len(parts) < 8:
+        all_parts = text.split()
+        if len(all_parts) < 7:
             return None
 
+        is_device_node = text.startswith("b") or text.startswith("c")
+        perms = all_parts[0]
+        owner = all_parts[2]
+        group = all_parts[3]
+
+        if is_device_node:
+            if all_parts[4].endswith(','):
+                size = ""
+                date_idx = 6
+            else:
+                size = ""
+                date_idx = 5
+        else:
+            size = all_parts[4]
+            date_idx = 5
+
+        if len(all_parts) <= date_idx:
+            return None
+
+        # Check ISO mode
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", all_parts[date_idx]):
+            if len(all_parts) <= date_idx + 1:
+                return None
+            modified = f"{all_parts[date_idx]} {all_parts[date_idx+1]}"
+            name_idx = date_idx + 2
+        else:
+            if len(all_parts) <= date_idx + 2:
+                return None
+            modified = f"{all_parts[date_idx]} {all_parts[date_idx+1]} {all_parts[date_idx+2]}"
+            name_idx = date_idx + 3
+
+        parts = text.split(maxsplit=name_idx)
+        name = parts[name_idx] if len(parts) > name_idx else ""
+
         return {
-            "perms": parts[0],
-            "owner": parts[2],
-            "group": parts[3],
-            "size": parts[4],
-            "modified": f"{parts[5]} {parts[6]}",
-            "name": parts[7],
+            "perms": perms,
+            "owner": owner,
+            "group": group,
+            "size": size,
+            "modified": modified,
+            "name": name,
         }
 
     def safe_int(self, s):
@@ -1001,10 +1045,12 @@ class ADBFileExplorer(QMainWindow):
         if not name.endswith('.apk'):
             return
         full_path = self._dpath(self.current_path, name)
-        install_cmd = self._root_cmd(f'pm install -r \\"{full_path}\\"') if self.is_root else f'pm install -r "{full_path}"'
-        install_thread = ADBThread(self.adb_path, ['shell', install_cmd])
-        install_thread.command_finished.connect(
-            lambda out, err: self._handle_install_apk_result(out, err, name)
+        install_thread = RemoteAPKInstallThread(full_path, self.is_root)
+        install_thread.install_finished.connect(
+            lambda result: self._handle_install_apk_result(result, name)
+        )
+        install_thread.install_failed.connect(
+            lambda error: self._handle_install_apk_worker_error(error, name)
         )
         self.statusBar.showMessage(f"Installing APK {name}...")
         self._start_thread(install_thread)
@@ -1043,14 +1089,19 @@ class ADBFileExplorer(QMainWindow):
             error_status=f"Script {name} finished with errors."
         )
 
-    def _handle_install_apk_result(self, output, error, name):
-        if error:
+    def _handle_install_apk_result(self, result, name):
+        if result.returncode != 0:
+            output = (result.stderr or result.stdout or "").strip()
             QMessageBox.critical(self, "Install APK", f"Failed to install {name}:\n\n{output}")
             self.statusBar.showMessage(f"APK {name} failed to install.")
             return
 
         self.statusBar.showMessage(f"APK {name} installed successfully.")
         self.refresh_file_list()
+
+    def _handle_install_apk_worker_error(self, error_message, name):
+        QMessageBox.critical(self, "Install APK", f"Failed to install {name}:\n\n{error_message}")
+        self.statusBar.showMessage(f"APK {name} failed to install.")
 
     def _run_live_command(self, cmd_args: list, title: str, header_html: str, success_status: str, error_status: str):
         """Open a live output dialog and stream command output into it."""

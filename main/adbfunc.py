@@ -11,6 +11,7 @@ Also handles AppImage compatibility.
 import sys
 import os
 
+from util.apkapi import APKInstallOptions, install_local_package, supported_package_dialog_filter
 from util.resource import get_root_dir, resource_path
 from util.toolpaths import ToolPaths
 root_dir = get_root_dir()
@@ -93,6 +94,28 @@ class CommandRunner(QThread):
             self.output_signal.emit(f"Error: Command not found. Is '{self.command.split()[0]}' in your PATH or platform-tools?", "Error")
         except Exception as e:
             self.output_signal.emit(f"Execution Error: {str(e)}", "Error")
+
+
+class APKInstallWorker(QThread):
+    """Run potentially heavy package installs without freezing the dialog."""
+
+    install_finished = pyqtSignal(object)
+    install_failed = pyqtSignal(str)
+
+    def __init__(self, package_path: str, install_flags: dict | None = None):
+        super().__init__()
+        self.package_path = package_path
+        self.install_flags = install_flags or {}
+
+    def run(self):
+        try:
+            result = install_local_package(
+                self.package_path,
+                options=APKInstallOptions.from_flag_dict(self.install_flags),
+            )
+            self.install_finished.emit(result)
+        except Exception as exc:
+            self.install_failed.emit(str(exc))
 
 
 class DeviceInfoWorker(QThread):
@@ -339,17 +362,18 @@ class InstallAPKDialog(QDialog):
         super().__init__(parent)
         self.parent_app = parent
         self.install_flags = {}
+        self.install_worker = None
         self._setup_ui()
 
     def _setup_ui(self):
-        self.setWindowTitle("Install APK")
+        self.setWindowTitle("Install Package")
         self.setFixedSize(400, 150)
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
         self.setModal(True)
 
         layout = QVBoxLayout()
 
-        layout.addWidget(QLabel("Select APK file to install:"))
+        layout.addWidget(QLabel("Select APK, APKM, XAPK, or ZIP package to install:"))
 
         # Path input and Browse button
         path_layout = QHBoxLayout()
@@ -370,12 +394,12 @@ class InstallAPKDialog(QDialog):
         self.flags_btn = QPushButton("Flags")
         self.flags_btn.clicked.connect(self._open_flags)
         
-        install_btn = QPushButton("Install APK")
-        install_btn.clicked.connect(self._install_apk)
-        install_btn.setDefault(True)
+        self.install_btn = QPushButton("Install Package")
+        self.install_btn.clicked.connect(self._install_apk)
+        self.install_btn.setDefault(True)
         
         action_layout.addWidget(self.flags_btn)
-        action_layout.addWidget(install_btn)
+        action_layout.addWidget(self.install_btn)
         layout.addLayout(action_layout)
 
         self.setLayout(layout)
@@ -387,40 +411,66 @@ class InstallAPKDialog(QDialog):
 
     def _browse_apk(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select APK File", "", "APK Files (*.apk);;All Files (*)"
+            self, "Select Package File", "", supported_package_dialog_filter()
         )
         if file_path:
             self.path_entry.setText(file_path)
 
     def _install_apk(self):
-        apk_path = self.path_entry.text().strip()
-        if not apk_path:
-            QMessageBox.warning(self, "No APK", "Please select or enter an APK path.")
+        package_path = self.path_entry.text().strip()
+        if not package_path:
+            QMessageBox.warning(self, "No Package", "Please select or enter a package path.")
             return
 
-        if not os.path.exists(apk_path):
-            QMessageBox.warning(self, "Invalid Path", "The specified APK file does not exist.")
+        if not os.path.exists(package_path):
+            QMessageBox.warning(self, "Invalid Path", "The specified package file does not exist.")
             return
 
-        if hasattr(self.parent_app, 'run_command_async'):
-            flag_str = ""
-            for k, v in self.install_flags.items():
-                if k == "--abi":
-                    flag_str += f" --abi {v}"
-                else:
-                    flag_str += f" {k}"
-            flag_str = flag_str.strip()
-
-            cmd = f'adb install {flag_str} "{apk_path}"' if flag_str else f'adb install "{apk_path}"'
-
-            self.parent_app.run_command_async(
-                cmd,
-                f"Installing {os.path.basename(apk_path)}",
-                "ADB"
-            )
-            self.accept()
-        else:
+        if not self.parent_app:
             QMessageBox.critical(self, "Error", "Command execution method not found.")
+            return
+
+        self.flags_btn.setEnabled(False)
+        self.install_btn.setEnabled(False)
+        self.path_entry.setEnabled(False)
+
+        package_name = os.path.basename(package_path)
+        if hasattr(self.parent_app, "log_action"):
+            self.parent_app.log_action(f"Installing {package_name}...", "#00ffff")
+
+        self.install_worker = APKInstallWorker(package_path, self.install_flags)
+        self.install_worker.install_finished.connect(self._on_install_finished)
+        self.install_worker.install_failed.connect(self._on_install_failed)
+        self.install_worker.finished.connect(self._restore_controls)
+        self.install_worker.start()
+
+    def _restore_controls(self):
+        self.flags_btn.setEnabled(True)
+        self.install_btn.setEnabled(True)
+        self.path_entry.setEnabled(True)
+
+    def _on_install_finished(self, result):
+        package_name = os.path.basename(self.path_entry.text().strip() or "package")
+
+        if hasattr(self.parent_app, "log_action"):
+            for line in result.stdout.splitlines():
+                if line.strip():
+                    self.parent_app.log_action(line.strip())
+            for line in result.stderr.splitlines():
+                if line.strip():
+                    self.parent_app.log_action(line.strip(), "#ff6666")
+
+        if result.returncode != 0:
+            output = result.stderr or result.stdout or "Unknown installation error."
+            QMessageBox.critical(self, "Install Failed", f"Failed to install {package_name}:\n\n{output}")
+            return
+
+        if hasattr(self.parent_app, "log_action"):
+            self.parent_app.log_action(f"{package_name} installed successfully.", "#77DD77")
+        self.accept()
+
+    def _on_install_failed(self, error_message: str):
+        QMessageBox.critical(self, "Install Failed", error_message)
 
 
 class UninstallAppDialog(QDialog):

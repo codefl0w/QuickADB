@@ -203,3 +203,30 @@ QWidget#TBspacer {
 QLineEdit#PathBar, QLineEdit#SearchBar {
     background-color: #2c2c2c;
 }
+
+QTabWidget::pane {
+    border: 1px solid #383838;
+    background-color: #121212;
+    border-radius: 4px;
+}
+
+QTabBar::tab {
+    background-color: #1e1e1e;
+    color: #b0b0b0;
+    padding: 6px 12px;
+    border: 1px solid #383838;
+    border-bottom: none;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    margin-right: 2px;
+}
+
+QTabBar::tab:selected {
+    background-color: #121212;
+    color: #ffffff;
+    border-bottom: 1px solid #121212;
+}
+
+QTabBar::tab:hover:!selected {
+    background-color: #2c2c2c;
+}

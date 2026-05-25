@@ -13,8 +13,50 @@ Usage:
     serial_args = dm.serial_args()              # ["-s", "192.168.1.100:5555"] or []
 """
 import os
+import sys
 import subprocess
 from typing import Optional, List, Dict
+
+from PyQt6.QtCore import QThread, pyqtSignal
+
+try:
+    import usb.core
+except ImportError:
+    pass
+
+class USBMonitorWorker(QThread):
+    """Background thread to monitor USB plug/unplug events and trigger device list refresh."""
+    devices_changed = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self._running = True
+        self._last_count = -1
+
+    def run(self):
+        if 'usb' not in sys.modules or not hasattr(sys.modules['usb'], 'core'):
+            return
+
+        while self._running:
+            try:
+                # Count USB devices
+                devs = list(usb.core.find(find_all=True))
+                count = len(devs)
+                if self._last_count != -1 and count != self._last_count:
+                    self.devices_changed.emit()
+                self._last_count = count
+            except Exception:
+                pass
+            
+            # Poll every ~1.5 seconds, checking stop condition
+            for _ in range(6):
+                if not self._running:
+                    break
+                self.msleep(250)
+
+    def stop(self):
+        self._running = False
+        self.wait(1000)
 
 from util.toolpaths import ToolPaths
 

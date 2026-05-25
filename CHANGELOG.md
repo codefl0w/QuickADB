@@ -3,6 +3,22 @@ The changelog only includes what's new. To read feature descriptions, see [Featu
 
 For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md).
 
+# [5.2.0] - 25.05.2026
+
+### Added
+
+- APK Installer API: centralized method to install APKs with arguments or splits (backend)
+- Device Manager: USB plug-in detection to auto-refresh device list
+
+### Fixed
+
+- Dark theme not applying to QWidget tabs
+
+### Improved
+
+- File Explorer: improved metadata parsing
+
+
 # [5.1.0] - 09.04.2026
 
 ### Added

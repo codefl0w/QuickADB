@@ -15,7 +15,7 @@ from typing import Optional, List, Tuple, Callable
 # Setup root dir to allow imports relative to project root
 from util.resource import get_root_dir, resource_path, get_clean_env, open_url_safe
 from util.toolpaths import ToolPaths
-from util.devicemanager import DeviceManager
+from util.devicemanager import DeviceManager, USBMonitorWorker
 root_dir = get_root_dir()
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
@@ -65,7 +65,7 @@ class QuickADBApp(QMainWindow):
     # Main window
 
     # Constants
-    APP_VERSION = "V5.1.0"
+    APP_VERSION = "V5.2.0"
     APP_SUFFIX = "Full"
     BUTTON_WIDTH = 150
     BUTTON_HEIGHT = 40
@@ -147,6 +147,11 @@ class QuickADBApp(QMainWindow):
         self.refresh_devices_btn.clicked.connect(self.check_devices)
         device_layout.addWidget(self.refresh_devices_btn)
 
+        # Start USB monitor
+        self.usb_monitor = USBMonitorWorker()
+        self.usb_monitor.devices_changed.connect(self.check_devices)
+        self.usb_monitor.start()
+
         top_layout.addWidget(device_container, 0, 2, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         main_layout.addLayout(top_layout)
 
@@ -221,6 +226,12 @@ class QuickADBApp(QMainWindow):
             bottom_layout.addWidget(btn)
 
         self.show()
+
+    def closeEvent(self, event):
+        """Cleanup before closing."""
+        if hasattr(self, 'usb_monitor') and self.usb_monitor:
+            self.usb_monitor.stop()
+        super().closeEvent(event)
 
     def _make_button(self, text: str, callback: Callable) -> QPushButton:
         """Creates a standard sized button and wires its click callback."""

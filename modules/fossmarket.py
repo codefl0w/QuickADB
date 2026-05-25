@@ -13,7 +13,6 @@ import html
 import hashlib
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import time
@@ -24,10 +23,9 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 
-from util.devicemanager import DeviceManager
+from util.apkapi import APKInstallOptions, install_local_package
 from util.resource import get_root_dir, open_url_safe
 from util.thememanager import ThemeManager
-from util.toolpaths import ToolPaths
 
 root_dir = get_root_dir()
 if root_dir not in sys.path:
@@ -813,20 +811,10 @@ class InstallWorker(QThread):
                         percent = min(100, int(downloaded * 100 / total_bytes))
                         self.progress_changed.emit(percent)
 
-    def _install_apk(self, apk_path: str) -> subprocess.CompletedProcess:
-        adb_exe = ToolPaths.instance().adb
-        command = [adb_exe] + DeviceManager.instance().serial_args() + ["install", "-r", apk_path]
-
-        creationflags = 0
-        if os.name == "nt":
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-
-        return subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-            creationflags=creationflags,
+    def _install_apk(self, apk_path: str):
+        return install_local_package(
+            apk_path,
+            options=APKInstallOptions(reinstall=True),
         )
 
 

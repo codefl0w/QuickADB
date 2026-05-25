@@ -31,5 +31,6 @@ platform-tools/
 util/payload-dumper-go.exe
 util/payload-dumper-go
 
-# --- Temporary files ---
+# --- Temporary / workspace files ---
 bootanim_backups
+.vscode/
