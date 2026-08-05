@@ -25,20 +25,42 @@ PLATFORM_TOOLS_URLS = {
 }
 
 PAYLOAD_DUMPER_URLS = {
-    "Windows": "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_windows_amd64.tar.gz",
-    "Linux": "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_linux_amd64.tar.gz",
-    "Darwin": "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_darwin_amd64.tar.gz"
+    ("Windows", "x86_64"): "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_windows_amd64.tar.gz",
+    ("Windows", "arm64"): "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_windows_arm64.tar.gz",
+    ("Linux", "x86_64"): "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_linux_amd64.tar.gz",
+    ("Linux", "arm64"): "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_linux_arm64.tar.gz",
+    ("Darwin", "x86_64"): "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_darwin_amd64.tar.gz",
+    ("Darwin", "arm64"): "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_darwin_arm64.tar.gz"
 }
 
-APPIMAGE_TOOL_URL = "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+APPIMAGE_TOOL_URLS = {
+    "x86_64": "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage",
+    "arm64": "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage"
+}
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 UTIL_DIR = os.path.join(ROOT_DIR, "util")
 DIST_DIR = os.path.join(ROOT_DIR, "dist")
+APP_VERSION = "V5.3.0"
+
+def get_arch():
+    """Detect machine architecture and normalize to x86_64 or arm64."""
+    machine = platform.machine().lower()
+    if machine in ("arm64", "aarch64", "armv8l"):
+        return "arm64"
+    return "x86_64"
 
 def download_file(url, dest):
     print(f"Downloading {url}...")
-    urllib.request.urlretrieve(url, dest)
+    try:
+        urllib.request.urlretrieve(url, dest)
+    except Exception as e:
+        print(f"Failed to download {url}: {e}")
+        # Fallback for Windows arm64 if ssut hasn't built a native win arm64 binary
+        if "windows_arm64" in url:
+            fallback_url = url.replace("windows_arm64", "windows_amd64")
+            print(f"Attempting fallback to {fallback_url}...")
+            urllib.request.urlretrieve(fallback_url, dest)
 
 def extract_zip(src, dest_dir):
     print(f"Extracting {src} to {dest_dir}...")
@@ -61,8 +83,8 @@ def extract_targz_payload_dumper(src, dest_dir):
     if os.path.exists(tar_path):
         os.remove(tar_path)
 
-def create_linux_appimage():
-    print("Creating Linux AppImage...")
+def create_linux_appimage(arch):
+    print(f"Creating Linux AppImage for {arch}...")
     appdir = os.path.join(ROOT_DIR, "QuickADB.AppDir")
     if os.path.exists(appdir):
         shutil.rmtree(appdir)
@@ -110,19 +132,27 @@ exec QuickADB "$@"
     # 5. Download appimagetool
     tool_path = os.path.join(ROOT_DIR, "appimagetool")
     if not os.path.exists(tool_path):
-        download_file(APPIMAGE_TOOL_URL, tool_path)
+        appimage_url = APPIMAGE_TOOL_URLS.get(arch, APPIMAGE_TOOL_URLS["x86_64"])
+        download_file(appimage_url, tool_path)
         os.chmod(tool_path, 0o755)
 
     # 6. Build AppImage
-    # ARCH=x86_64 is required by appimagetool
     env = os.environ.copy()
-    env["ARCH"] = "x86_64"
+    env["ARCH"] = "aarch64" if arch == "arm64" else "x86_64"
 
-    # Running with --appimage-extract-and-run for GitHub Actions support (FUSE-less environments)
     cmd = [tool_path, "--appimage-extract-and-run", "--comp", "zstd", appdir]
     try:
         subprocess.run(cmd, check=True, env=env, cwd=ROOT_DIR)
-        print("AppImage created successfully!")
+        output_name = f"QuickADB_{APP_VERSION}_Linux_{arch}.AppImage"
+        # Find generated AppImage file and rename
+        for f in os.listdir(ROOT_DIR):
+            if f.endswith(".AppImage") and f != "appimagetool":
+                target_path = os.path.join(ROOT_DIR, output_name)
+                if os.path.exists(target_path):
+                    os.remove(target_path)
+                os.rename(os.path.join(ROOT_DIR, f), target_path)
+                print(f"AppImage created successfully as {output_name}")
+                break
     except subprocess.CalledProcessError as e:
         print(f"AppImage creation failed with exit code {e.returncode}")
 
@@ -135,7 +165,6 @@ def cleanup_processes():
     print("Cleaning up background processes...")
     for proc in processes:
         try:
-            # taskkill /F /IM <proc> /T
             subprocess.run(["taskkill", "/F", "/IM", proc, "/T"],
                            capture_output=True, check=False)
         except Exception:
@@ -143,16 +172,18 @@ def cleanup_processes():
 
 def main():
     os_name = platform.system()
+    arch = get_arch()
+
     if os_name not in PLATFORM_TOOLS_URLS:
         print(f"Unsupported OS: {os_name}")
         sys.exit(1)
 
-    print(f"Building for {os_name}...")
+    print(f"Building QuickADB {APP_VERSION} for {os_name} ({arch})...")
 
     # Pre-build cleanup
     cleanup_processes()
 
-    #  Clean old build/dist and dependencies
+    # Clean old build/dist and dependencies
     print("Cleaning environment...")
     dirs_to_clean = ["build", "dist", "QuickADB.AppDir", "platform-tools", "temp_pd"]
     for d in dirs_to_clean:
@@ -188,38 +219,43 @@ def main():
     extract_zip(pt_zip, ROOT_DIR)
     os.remove(pt_zip)
 
-    # 2. Download and Extract Payload Dumper Go
-    pd_targz = os.path.join(ROOT_DIR, "payload-dumper-go.tar.gz")
-    download_file(PAYLOAD_DUMPER_URLS[os_name], pd_targz)
-
-    temp_pd_dir = os.path.join(ROOT_DIR, "temp_pd")
-    os.makedirs(temp_pd_dir, exist_ok=True)
-    extract_targz_payload_dumper(pd_targz, temp_pd_dir)
-
-    binary_name = "payload-dumper-go"
-    if os_name == "Windows":
-        binary_name += ".exe"
-
-    src_binary = os.path.join(temp_pd_dir, binary_name)
-    if not os.path.exists(src_binary):
-        for root, dirs, files in os.walk(temp_pd_dir):
-            for f in files:
-                if f.startswith("payload-dumper-go"):
-                    src_binary = os.path.join(root, f)
-                    break
-
-    if os.path.exists(src_binary):
-        dest_binary = os.path.join(UTIL_DIR, binary_name)
-        os.makedirs(UTIL_DIR, exist_ok=True)
-        shutil.move(src_binary, dest_binary)
-        if os_name != "Windows":
-            os.chmod(dest_binary, 0o755)
-        print(f"Moved {binary_name} to {UTIL_DIR}")
+    # 2. Download and Extract Payload Dumper Go (skipped on Windows ARM64 as upstream binaries are unavailable)
+    if os_name == "Windows" and arch == "arm64":
+        print("[WARNING] payload-dumper-go is not available upstream for Windows ARM64. Skipping download...")
     else:
-        print(f"Error: Could not find {binary_name} in the archive.")
+        pd_url = PAYLOAD_DUMPER_URLS.get((os_name, arch), PAYLOAD_DUMPER_URLS.get((os_name, "x86_64")))
+        pd_targz = os.path.join(ROOT_DIR, "payload-dumper-go.tar.gz")
+        download_file(pd_url, pd_targz)
 
-    shutil.rmtree(temp_pd_dir)
-    os.remove(pd_targz)
+        temp_pd_dir = os.path.join(ROOT_DIR, "temp_pd")
+        os.makedirs(temp_pd_dir, exist_ok=True)
+        extract_targz_payload_dumper(pd_targz, temp_pd_dir)
+
+        binary_name = "payload-dumper-go"
+        if os_name == "Windows":
+            binary_name += ".exe"
+
+        src_binary = os.path.join(temp_pd_dir, binary_name)
+        if not os.path.exists(src_binary):
+            for root, dirs, files in os.walk(temp_pd_dir):
+                for f in files:
+                    if f.startswith("payload-dumper-go"):
+                        src_binary = os.path.join(root, f)
+                        break
+
+        if os.path.exists(src_binary):
+            dest_binary = os.path.join(UTIL_DIR, binary_name)
+            os.makedirs(UTIL_DIR, exist_ok=True)
+            shutil.move(src_binary, dest_binary)
+            if os_name != "Windows":
+                os.chmod(dest_binary, 0o755)
+            print(f"Moved {binary_name} to {UTIL_DIR}")
+        else:
+            print(f"Error: Could not find {binary_name} in the archive.")
+
+        shutil.rmtree(temp_pd_dir)
+        if os.path.exists(pd_targz):
+            os.remove(pd_targz)
 
     # 3. Handle platform-tools permissions
     pt_dir = os.path.join(ROOT_DIR, "platform-tools")
@@ -241,9 +277,19 @@ def main():
         print(f"PyInstaller build failed with exit code {e.returncode}")
         sys.exit(e.returncode)
 
-    # 5. Linux AppImage Step
+    # 5. Output naming & Linux AppImage Step
     if os_name == "Linux":
-        create_linux_appimage()
+        create_linux_appimage(arch)
+    else:
+        ext = ".exe" if os_name == "Windows" else ""
+        original_bin = os.path.join(DIST_DIR, f"QuickADB{ext}")
+        final_bin_name = f"QuickADB_{APP_VERSION}_{os_name}_{arch}{ext}"
+        final_bin = os.path.join(DIST_DIR, final_bin_name)
+        if os.path.exists(original_bin):
+            if os.path.exists(final_bin):
+                os.remove(final_bin)
+            os.rename(original_bin, final_bin)
+            print(f"Final output built at {final_bin}")
 
 if __name__ == "__main__":
     main()

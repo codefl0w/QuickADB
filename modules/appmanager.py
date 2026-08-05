@@ -13,13 +13,13 @@ import os
 import re
 import tempfile
 import shutil
-import subprocess
 import json
 import concurrent.futures
 from typing import List
 
 from util.apkapi import APKInstallOptions, install_prepared_package, prepare_package_source, supported_package_dialog_filter
 from util.thememanager import ThemeManager
+from util.adbclient import ADBClient
 
 from util.resource import get_root_dir, resource_path
 from util.toolpaths import ToolPaths
@@ -80,24 +80,8 @@ class AppManagerWorker(QThread):
         self.finished.emit()
     
     def _run_adb_command(self, command_args, text=True):
-        """Helper to run an ADB command consistently."""
-        from util.devicemanager import DeviceManager
-        adb_exe = ToolPaths.instance().adb
-        full_command = [adb_exe] + DeviceManager.instance().serial_args() + command_args
-        creationflags = 0
-        if sys.platform == "win32":
-            creationflags = (
-                subprocess.CREATE_NEW_PROCESS_GROUP |
-                subprocess.CREATE_NO_WINDOW
-            )
-        return subprocess.run(
-            full_command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=creationflags,
-            text=text,
-            check=False
-        )
+        # Helper to run an ADB command consistently using ADBClient
+        return ADBClient.instance().run(command_args, text=text)
 
     def _emit_status(self, message: str, timeout_ms: int = 5000):
         self.status_message.emit(message, timeout_ms)
@@ -241,6 +225,7 @@ class AppManagerWorker(QThread):
         try:
             self.log_message.emit(f"{action.capitalize()}ing {package_name}...")
             command_map = {
+                "stop": ['shell', 'am', 'stop-app', package_name],
                 "disable": ['shell', 'pm', 'disable-user', '--user', '0', package_name],
                 "enable": ['shell', 'pm', 'enable', package_name],
                 "uninstall": ['uninstall', '--user', '0', package_name]
@@ -252,7 +237,8 @@ class AppManagerWorker(QThread):
             
             result = self._run_adb_command(command)
             if result.returncode == 0:
-                self.log_message.emit(f"Successfully {action}d {package_name}.")
+                past_tense = "stopped" if action == "stop" else f"{action}d"
+                self.log_message.emit(f"Successfully {past_tense} {package_name}.")
             else:
                 self.log_message.emit(f"Failed to {action} {package_name}: {result.stderr.strip()}")
         except Exception as e:
@@ -855,7 +841,7 @@ class AppManagerUI(WorkerMixin, QMainWindow):
 
         # Action buttons
         button_grid = QHBoxLayout()
-        actions = {"Uninstall": "uninstall", "Disable": "disable", "Enable": "enable"}
+        actions = {"Stop": "stop", "Uninstall": "uninstall", "Disable": "disable", "Enable": "enable"}
         for name, action in actions.items():
             button = QPushButton(f"{name} Selected")
             button.clicked.connect(lambda _, a=action: self.perform_app_action(a))

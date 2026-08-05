@@ -5,7 +5,6 @@ Supports QR code pairing and manual pairing code entry with mDNS auto-connect.
 """
 import os
 import secrets
-import subprocess
 import time
 from typing import Optional
 
@@ -15,6 +14,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QPixmap, QImage
+
+from util.adbclient import ADBClient
 
 import qrcode
 
@@ -80,10 +81,8 @@ class AutoConnectWorker(QThread):
         # Only auto-connect if the IP matches the one the user just paired with
         if ip == self.target_ip:
             address = f"{ip}:{info.port}"
-            flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-
             try:
-                subprocess.run([self.adb_cmd, "connect", address], capture_output=True, creationflags=flags)
+                ADBClient.instance().run(["connect", address], use_serial=False)
                 self.is_connected = True
                 self.connected_success.emit(address)
             except Exception as e:
@@ -157,11 +156,10 @@ class WirelessADBWorker(QThread):
         if not ip: return
 
         address = f"{ip}:{info.port}"
-        flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        from util.adbclient import ADBClient
 
         try:
-            cmd = [self.adb_cmd, "pair", address, self.password]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15, creationflags=flags)
+            proc = ADBClient.instance().run(["pair", address, self.password], use_serial=False, timeout=15)
 
             if "Successfully paired" in proc.stdout:
                 self.is_paired = True
@@ -177,10 +175,10 @@ class WirelessADBWorker(QThread):
         if not ip: return
 
         address = f"{ip}:{info.port}"
-        flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        from util.adbclient import ADBClient
 
         try:
-            subprocess.run([self.adb_cmd, "connect", address], capture_output=True, creationflags=flags)
+            ADBClient.instance().run(["connect", address], use_serial=False)
             self.is_connected = True
             self.connected_success.emit(address)
         except Exception as e:
@@ -200,10 +198,9 @@ class ManualPairWorker(QThread):
         self.pin = pin
 
     def run(self):
-        flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        from util.adbclient import ADBClient
         try:
-            cmd = [self.adb_cmd, "pair", self.address, self.pin]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=16, creationflags=flags)
+            proc = ADBClient.instance().run(["pair", self.address, self.pin], use_serial=False, timeout=16)
 
             if "Successfully paired" in proc.stdout:
                 target_ip = self.address.split(':')[0]

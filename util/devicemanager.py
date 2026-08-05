@@ -19,6 +19,8 @@ from typing import Optional, List, Dict
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from util.adbclient import ADBClient
+
 try:
     import usb.core
 except ImportError:
@@ -94,19 +96,19 @@ class DeviceManager:
 
     def refresh(self) -> List[Dict[str, str]]:
         """Run `adb devices` and `fastboot devices`, parse results, resolve friendly names."""
-        adb = ToolPaths.instance().adb
-        raw_adb = self._run_silent([adb, "devices"])
+        
+        client = ADBClient.instance()
+        raw_adb = client.run_silent(["devices"], tool="adb", use_serial=False)
         self.devices = self._parse_devices(raw_adb)
 
         # Resolve friendly product names for ADB devices
         for dev in self.devices:
             if dev["state"] == "device":
-                dev["name"] = self._get_product_name(adb, dev["serial"])
+                dev["name"] = self._get_product_name(dev["serial"])
             else:
                 dev["name"] = dev["serial"]
 
-        fastboot = ToolPaths.instance().fastboot
-        raw_fb = self._run_silent([fastboot, "devices"])
+        raw_fb = client.run_silent(["devices"], tool="fastboot", use_serial=False)
         fb_devices = self._parse_fastboot_devices(raw_fb)
 
         # Only add fastboot devices that don't share a serial with a currently detected ADB device
@@ -188,10 +190,12 @@ class DeviceManager:
         return devices
 
     @staticmethod
-    def _get_product_name(adb: str, serial: str) -> str:
+    def _get_product_name(serial: str) -> str:
         """Query a device's friendly product name via getprop."""
-        out = DeviceManager._run_silent(
-            [adb, "-s", serial, "shell", "getprop", "ro.product.manufacturer", "&&", "getprop", "ro.product.model"]
+        from util.adbclient import ADBClient
+        out = ADBClient.instance().run_silent(
+            ["-s", serial, "shell", "getprop", "ro.product.manufacturer", "&&", "getprop", "ro.product.model"],
+            use_serial=False
         ).strip().replace("\n", " ")
         if out and "error" not in out.lower():
             return out
@@ -199,14 +203,16 @@ class DeviceManager:
 
     @staticmethod
     def _run_silent(cmd: list) -> str:
-        """Run a command, return stdout, swallow errors."""
-        creationflags = 0
-        if os.name == "nt":
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        """Run a command, return stdout, swallow errors (deprecated helper, delegates to ADBClient)."""
+        from util.adbclient import ADBClient
         try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=10, creationflags=creationflags
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=ADBClient.get_creation_flags()
             )
-            return proc.stdout
+            return res.stdout
         except Exception:
             return ""

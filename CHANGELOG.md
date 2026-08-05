@@ -3,6 +3,18 @@ The changelog only includes what's new. To read feature descriptions, see [Featu
 
 For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md).
 
+# [5.3.0] - 06.08.2026
+
+### Added
+
+- ARM64 prebuilt executable support
+- Stop selected app action in App Manager
+
+### Improved
+
+- Unified ADB wrapper and overall code cleanup
+- Terminal initial message (now includes better platform info for bug reports)
+
 # [5.2.0] - 25.05.2026
 
 ### Added

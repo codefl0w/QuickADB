@@ -17,14 +17,17 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact_name: QuickADB-Windows
-            artifact_path: dist/QuickADB.exe
+            artifact_name: QuickADB_V5.3.0_Windows_x86_64
+            artifact_path: dist/QuickADB_V5.3.0_Windows_x86_64.exe
           - os: ubuntu-22.04
-            artifact_name: QuickADB-Linux
-            artifact_path: QuickADB-x86_64.AppImage
+            artifact_name: QuickADB_V5.3.0_Linux_x86_64
+            artifact_path: QuickADB_V5.3.0_Linux_x86_64.AppImage
           - os: macos-latest
-            artifact_name: QuickADB-macOS
-            artifact_path: dist/QuickADB
+            artifact_name: QuickADB_V5.3.0_macOS_arm64
+            artifact_path: dist/QuickADB_V5.3.0_Darwin_arm64
+          - os: macos-13
+            artifact_name: QuickADB_V5.3.0_macOS_x86_64
+            artifact_path: dist/QuickADB_V5.3.0_Darwin_x86_64
 
     runs-on: ${{ matrix.os }}
 
@@ -50,10 +53,38 @@ jobs:
           path: ${{ matrix.artifact_path }}
           if-no-files-found: error
 
+  build-linux-arm64:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build on Ubuntu 22.04 ARM64 via QEMU
+        uses: uraimo/run-on-arch-action@v2
+        with:
+          arch: aarch64
+          distro: ubuntu22.04
+          githubToken: ${{ secrets.GITHUB_TOKEN }}
+          install: |
+            apt-get update
+            apt-get install -y python3 python3-pip python3-venv git zstd file libgl1-mesa-glx
+          run: |
+            python3 -m venv venv
+            . venv/bin/activate
+            pip install -r requirements.txt
+            python build.py
+
+      - name: Upload Linux ARM64 AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuickADB_V5.3.0_Linux_arm64
+          path: QuickADB_V5.3.0_Linux_arm64.AppImage
+          if-no-files-found: error
+
   release:
-    needs: build
+    needs: [build, build-linux-arm64]
     if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Download all artifacts

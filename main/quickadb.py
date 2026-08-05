@@ -5,6 +5,7 @@ Other adb tasks that require more code, such as the device spec dialog, are hand
 '''
 import sys
 import os
+import platform
 import threading
 import subprocess
 import time
@@ -65,7 +66,7 @@ class QuickADBApp(QMainWindow):
     # Main window
 
     # Constants
-    APP_VERSION = "V5.2.0"
+    APP_VERSION = "V5.3.0"
     APP_SUFFIX = "Full"
     BUTTON_WIDTH = 150
     BUTTON_HEIGHT = 40
@@ -247,6 +248,9 @@ class QuickADBApp(QMainWindow):
     def create_command_button(self, text: str, callback: Callable, row: int, column: int) -> QPushButton:
         """Creates a command button and adds it to the grid layout."""
         button = self._make_button(text, callback)
+        if text == "Dump payload.bin" and sys.platform == "win32" and platform.machine().lower() in ("arm64", "aarch64"):
+            button.setEnabled(False)
+            button.setToolTip("Payload Dumper is unavailable on Windows ARM64")
         self.commands_layout.addWidget(button, row, column)
         return button
 

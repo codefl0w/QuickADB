@@ -557,7 +557,7 @@ class TerminalWindow(QMainWindow):
             self.log_output(f"QuickADB Version: {self.app_version} {self.app_suffix}\n")
             self.log_output(f"{self.adb_version}\n")
             self.log_output(f"{self.fastboot_version}\n")
-            self.log_output(f"OS: {self.system}\n\n")
+            self.log_output(f"Platform: {platform.system()}_{platform.machine()}_{platform.version()}\n\n")
 
         except Exception as e:
             self.log_output(f"Error starting terminal process: {str(e)}\n")
