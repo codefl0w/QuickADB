@@ -25,7 +25,7 @@ jobs:
           - os: macos-latest
             artifact_name: QuickADB_V5.3.0_macOS_arm64
             artifact_path: dist/QuickADB_V5.3.0_Darwin_arm64
-          - os: macos-13
+          - os: macos-15-intel
             artifact_name: QuickADB_V5.3.0_macOS_x86_64
             artifact_path: dist/QuickADB_V5.3.0_Darwin_x86_64
 
