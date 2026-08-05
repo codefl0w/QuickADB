@@ -59,17 +59,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build on Ubuntu 22.04 ARM64 via QEMU
+      - name: Build on Ubuntu 24.04 ARM64 via QEMU
         uses: uraimo/run-on-arch-action@v2
         with:
           arch: aarch64
-          distro: ubuntu22.04
+          distro: ubuntu24.04
           githubToken: ${{ secrets.GITHUB_TOKEN }}
           install: |
             apt-get update
-            apt-get install -y python3 python3-pip python3-venv git zstd file libgl1-mesa-glx
+            apt-get install -y python3 python3-pip python3-venv python3-pyqt6 git zstd file libgl1-mesa-glx
           run: |
-            python3 -m venv venv
+            python3 -m venv --system-site-packages venv
             . venv/bin/activate
             pip install -r requirements.txt
             python build.py
