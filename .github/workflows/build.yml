@@ -54,25 +54,22 @@ jobs:
           if-no-files-found: error
 
   build-linux-arm64:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build on Ubuntu 24.04 ARM64 via QEMU
-        uses: uraimo/run-on-arch-action@v2
-        with:
-          arch: aarch64
-          distro: ubuntu24.04
-          githubToken: ${{ secrets.GITHUB_TOKEN }}
-          install: |
-            apt-get update
-            apt-get install -y python3 python3-pip python3-venv python3-pyqt6 git zstd file libgl1-mesa-glx
-          run: |
-            python3 -m venv --system-site-packages venv
-            . venv/bin/activate
-            pip install -r requirements.txt
-            python build.py
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pyqt6 python3-pip python3-venv zstd file
+
+      - name: Build executable
+        run: |
+          python3 -m venv --system-site-packages venv
+          . venv/bin/activate
+          pip install -r requirements.txt
+          python build.py
 
       - name: Upload Linux ARM64 AppImage artifact
         uses: actions/upload-artifact@v4
