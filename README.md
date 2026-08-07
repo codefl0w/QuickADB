@@ -1,13 +1,20 @@
 
-<img width="500" height="125" alt="QuickADB Logo" src="https://github.com/user-attachments/assets/2531e507-63f1-4b23-b48e-ad4edd99d6d9" />
+<div align="center">
+
+<img width="575" alt="QuickADB Logo" src="https://github.com/codefl0w/QuickADB/blob/main/githubres/QuickADB_logo.png" />
+
+---
 
 A powerful GUI wrapper for ADB and Fastboot, built for Android developers and power users. Focused on reliability and speed, it provides one-click flows for common device tasks while keeping advanced tools available for power users.
 
 [![Downloads](https://codefl0w.xyz/gh-boards/out/codefl0w/badge/QuickADB/badge_downloads_2.svg)](https://github.com/codefl0w/QuickADB/releases)
 ![Stars](https://codefl0w.xyz/gh-boards/out/codefl0w/badge/QuickADB/badge_stars_2.svg)
 [![Platform](https://codefl0w.xyz/gh-boards/out/codefl0w/profile/badge_custom.svg)](#platform-support)
+![Arch](https://codefl0w.xyz/gh-boards/out/codefl0w/profile/badge_custom_3.svg)
 [![License](https://codefl0w.xyz/gh-boards/out/codefl0w/badge/QuickADB/badge_license_2.svg)](LICENSE)
 ![Workflow](https://codefl0w.xyz/gh-boards/out/codefl0w/badge/QuickADB/badge_workflow_2_latest.svg)
+
+</div>
 
 ---
 
@@ -51,9 +58,9 @@ QuickADB is a portable GUI wrapper for ADB and Fastboot that eliminates the need
 
 | Platform | Supported          | Notes                                                                            |
 |----------|--------------------|----------------------------------------------------------------------------------|
-| Windows  | Yes                | Primary target                                                                   |
-| Linux    | Yes                | Some libs may mismatch with your distro and cause issues. If so, create an issue |
-| macOS    | Yes       | All functions work as expected as per user feedback        |
+| Windows  | Yes  ✅  (X86_64, ARM64)            | Primary target (ARM64 variant does support payload-dumper-go)   |
+| Linux    | Yes  ✅  (X86_64, ARM64)            | Built on Ubuntu 22.04, may not work on older distros            |
+| macOS    | Yes  ✅  (X86_64, ARM64)            | All functions work as expected as per user feedback             |
 
 The latest source is built into executables for all three platforms.
 
@@ -196,7 +203,7 @@ Please follow the existing code style and make sure the code runs on at least on
 ## Credits
 
 
-- [payload-dumper-go](https://github.com/ssut/payload-dumper-go) by ssut — payload.bin extraction
+- [payload-dumper-go](https://github.com/ssut/payload-dumper-go) by ssut - payload.bin extraction
 
 - [SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools#downloads) by Google - ADB and fastboot binaries
 
