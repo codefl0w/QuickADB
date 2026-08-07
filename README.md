@@ -58,7 +58,7 @@ QuickADB is a portable GUI wrapper for ADB and Fastboot that eliminates the need
 
 | Platform | Supported          | Notes                                                                            |
 |----------|--------------------|----------------------------------------------------------------------------------|
-| Windows  | Yes  ✅  (X86_64, ARM64)            | Primary target (ARM64 variant does support payload-dumper-go)   |
+| Windows  | Yes  ✅  (X86_64, ARM64)            | Primary target (ARM64 variant does not support payload-dumper-go ⚠️)   |
 | Linux    | Yes  ✅  (X86_64, ARM64)            | Built on Ubuntu 22.04, may not work on older distros            |
 | macOS    | Yes  ✅  (X86_64, ARM64)            | All functions work as expected as per user feedback             |
 
