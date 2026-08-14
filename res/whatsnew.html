@@ -10,15 +10,24 @@ For the old changelog, see
 <a href="https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md">README_OLD</a>.
 </p>
 
-<h1 id="-5-3-0-06-08-2026">[5.3.0] - 06.08.2026</h1>
+<h1 id="-5-4-0-14-08-2026">[5.4.0] - 14.08.2026</h1>
 <h3 id="added">Added</h3>
 <ul>
-<li>ARM64 prebuilt executable support</li>
-<li>Stop selected app action in App Manager</li>
+<li>Aero theme based on Frutiger Aero design language</li>
+</ul>
+<h3 id="fixed">Fixed</h3>
+<ul>
+<li>Windows ARM64 builds</li>
 </ul>
 <h3 id="improved">Improved</h3>
 <ul>
-<li>Unified ADB wrapper and overall code cleanup</li>
-<li>Terminal initial message (now includes better platform info for bug reports)</li>
+<li>QuickADB: Set lower maximum width for log output</li>
+<li>Partition Manager: Speed up partition backup (dd bs=4M, lz4 on adb pull)</li>
+<li>Partition Manager: Use <code>/data/local/tmp/*</code> (skips FUSE overhead)</li>
+<li>Partition Manager: Improve partition pull status bar feedback</li>
+<li>Partition Manager: Pre-check already existing images on phone before pull</li>
+<li>ADBClient: 5 new helpers to further wrap subprocess calls</li>
+<li>Overall code cleanup</li>
 </ul>
+
 
