@@ -1,0 +1,373 @@
+/* Palette: Frutiger Aero (Deluxe Glass)
+   main_bg:       #eaf6fe (Aero sky atmosphere)
+   secondary_bg:  #d8eefc (Glossy card & pane)
+   tertiary_bg:   #c5e5fa (Frosted aqua pool)
+   misc:          #6eb9e6 (Glass bevel / border)
+   hover:         #9ce3ff (Luminous aqua glow)
+   accent:        #00a6ff (Vivid electric cyan)
+   text:          #07243e (Deep marine navy)
+   secondary_txt: #30658f (Aero slate)
+   quickadb_log_primary:   #07243e
+   quickadb_log_secondary: #30658f
+   button_txt:    #07243e
+*/
+
+QMainWindow, QWidget {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #eaf6fe, stop:0.25 #f6fbff, stop:0.75 #e1f2fd, stop:1.0 #d5ecfc);
+    color: #07243e;
+}
+
+/* Glass Panels / Cards */
+QFrame {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 rgba(255, 255, 255, 0.95), stop:1.0 rgba(220, 240, 253, 0.85));
+    border: 1px solid #bce1f8;
+    border-top: 1px solid #ffffff;
+    border-radius: 10px;
+}
+
+QLabel {
+    color: #07243e;
+    background-color: transparent;
+}
+
+/* Glossy 3D Skeuomorphic Buttons */
+QPushButton {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #ffffff, stop:0.46 #e5f5ff, 
+        stop:0.48 #c6e9fd, stop:0.50 #adddfa, 
+        stop:1.0 #d6f0fd);
+    color: #07243e;
+    font-weight: 500;
+    border-radius: 8px;
+    border: 1px solid #6eb9e6;
+    border-top: 1px solid #ffffff;
+    border-bottom: 2px solid #4a9fd1;
+    padding: 6px 15px;
+    margin: 1px;
+}
+
+QPushButton:hover {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #ffffff, stop:0.46 #d5f2ff, 
+        stop:0.48 #9be0ff, stop:0.50 #7bd4ff, 
+        stop:1.0 #bbf0ff);
+    border: 1px solid #38bdf8;
+    border-top: 1px solid #ffffff;
+    border-bottom: 2px solid #0284c7;
+}
+
+/* Tactile button depression */
+QPushButton:pressed {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #1ea7fd, stop:0.48 #028ce6, 
+        stop:0.50 #0077c8, stop:1.0 #0060a8);
+    color: #ffffff;
+    border: 1px solid #005a9e;
+    border-top: 2px solid #00457a;
+    border-bottom: 1px solid #38bdf8;
+    padding: 7px 14px 5px 16px;
+}
+
+QPushButton:disabled {
+    background-color: #ebf3f9;
+    color: #9ab4c7;
+    border: 1px solid #cce0ee;
+    border-bottom: 1px solid #cce0ee;
+}
+
+/* Glass Text Inputs */
+QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #edf5fc, stop:0.18 #ffffff, stop:1.0 #ffffff);
+    color: #07243e;
+    border: 1px solid #7dc3eb;
+    border-top: 1px solid #5da8d5;
+    border-radius: 7px;
+    padding: 6px 10px;
+    selection-background-color: #00a6ff;
+    selection-color: #ffffff;
+}
+
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
+    border: 1.5px solid #00a6ff;
+    background-color: #ffffff;
+}
+
+/* Glass Data Views */
+QTreeView {
+    background-color: #ffffff;
+    alternate-background-color: #f1f8fe;
+    color: #07243e;
+    border: 1px solid #bce1f8;
+    border-radius: 8px;
+    selection-background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #38c5ff, stop:1.0 #008be3);
+    selection-color: #ffffff;
+    padding: 4px;
+}
+
+QTreeView::item {
+    padding: 5px 6px;
+    border-radius: 4px;
+}
+
+QTreeView::item:hover {
+    background-color: #e5f5fe;
+    color: #0077c8;
+}
+
+QTreeView::item:selected {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #38c5ff, stop:1.0 #008be3);
+    color: #ffffff;
+}
+
+QHeaderView, QHeaderView::section {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #ffffff, stop:0.48 #ebf7ff, 
+        stop:0.50 #c6e6fa, stop:1.0 #daf1fc);
+    color: #07243e;
+    border: 1px solid #bce1f8;
+    border-top: none;
+    border-left: none;
+    padding: 6px 8px;
+    font-weight: bold;
+}
+
+QTableWidget {
+    gridline-color: #d1ecfc;
+    background-color: #ffffff;
+    color: #07243e;
+    border: 1px solid #bce1f8;
+    border-radius: 8px;
+    selection-background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #38c5ff, stop:1.0 #008be3);
+    selection-color: #ffffff;
+}
+
+QTableCornerButton::section {
+    background-color: transparent;
+    border: none;
+}
+
+QScrollArea {
+    background-color: transparent;
+    border: none;
+}
+
+/* Glass Capsule Scrollbar */
+QScrollBar:vertical {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e3f2fb, stop:1.0 #f4faff);
+    width: 12px;
+    border-radius: 6px;
+    margin: 2px 0px;
+}
+
+QScrollBar::handle:vertical {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+        stop:0 #d0eefd, stop:0.48 #8bd5f9, 
+        stop:0.52 #65c5f5, stop:1.0 #bde7fd);
+    min-height: 26px;
+    border-radius: 6px;
+    border: 1px solid #62b3e2;
+    margin: 1px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+        stop:0 #dff4ff, stop:0.48 #5fd0ff, 
+        stop:0.52 #1eb9fa, stop:1.0 #aae0ff);
+    border: 1px solid #009ceb;
+}
+
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: transparent;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+/* Dropdowns */
+QComboBox {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #ffffff, stop:0.48 #e5f5ff, 
+        stop:0.50 #c6e9fd, stop:1.0 #dcf2fd);
+    color: #07243e;
+    border-radius: 7px;
+    border: 1px solid #6eb9e6;
+    border-top: 1px solid #ffffff;
+    border-bottom: 2px solid #4a9fd1;
+    padding: 5px 12px;
+}
+
+QComboBox::drop-down {
+    border-top-right-radius: 7px;
+    border-bottom-right-radius: 7px;
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #57c7ff, stop:1.0 #008ee6);
+    width: 20px;
+}
+
+/* Gel Capsule Progress Bar */
+QProgressBar {
+    border: 1px solid #6eb9e6;
+    border-bottom: 1px solid #4a9fd1;
+    border-radius: 8px;
+    text-align: center;
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #d0e8f6, stop:0.5 #eef7fc, stop:1.0 #e0f1fa);
+    color: #07243e;
+    font-weight: bold;
+    height: 18px;
+}
+
+QProgressBar::chunk {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #78f2ff, stop:0.45 #00cbf7, 
+        stop:0.48 #00a4eb, stop:0.50 #008be3, 
+        stop:1.0 #3dd6ff);
+    border: 1px solid #0093e0;
+    border-radius: 6px;
+    margin: 1.5px;
+}
+
+QSplitter::handle {
+    background-color: #bce1f8;
+    height: 2px;
+}
+
+/* Glossy ToolBar */
+QToolBar {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #ffffff, stop:0.45 #e5f5ff, 
+        stop:0.50 #ceeafb, stop:1.0 #e0f3fd);
+    spacing: 6px;
+    padding: 5px 8px;
+    border-bottom: 1px solid #7bc3eb;
+}
+
+/* Soft Aero StatusBar */
+QStatusBar {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #edf7fd, stop:1.0 #d0eaf8);
+    color: #30658f;
+    border-top: 1px solid #a8dbf5;
+    padding: 3px 8px;
+}
+
+/* Dialogs & Popups */
+QMessageBox, QFileDialog, QDialog {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f2f9fd, stop:1.0 #d8effc);
+    color: #07243e;
+}
+
+QMessageBox QLabel {
+    background: transparent;
+    color: #07243e;
+    padding: 4px;
+}
+
+QMessageBox QPushButton {
+    min-width: 85px;
+}
+
+/* Glossy Checkbox Capsule */
+QCheckBox {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #ffffff, stop:0.48 #e5f5ff, 
+        stop:0.50 #c6e9fd, stop:1.0 #dcf2fd);
+    color: #07243e;
+    border-radius: 8px;
+    border: 1px solid #7bc3eb;
+    border-bottom: 2px solid #5aa9d6;
+    padding: 6px 20px;
+}
+
+QDialog QTextEdit {
+    background-color: #ffffff;
+    color: #07243e;
+    border: 1px solid #7bc3eb;
+    border-radius: 7px;
+}
+
+QDialog QPushButton {
+    min-width: 85px;
+}
+
+QProgressDialog {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1.0 #d8effc);
+    color: #07243e;
+    border: 1.5px solid #7bc3eb;
+    border-radius: 12px;
+    padding: 10px;
+}
+
+QProgressDialog QLabel {
+    color: #07243e;
+    padding: 12px;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+/* Scoped Overrides */
+
+QWidget#TBspacer {
+    background-color: #dff0fa;
+}
+
+/* Pill-shaped search and path bars */
+QLineEdit#PathBar, QLineEdit#SearchBar {
+    background-color: #ffffff;
+    border: 1.5px solid #7bc3eb;
+    border-radius: 12px;
+    padding: 6px 14px;
+}
+
+QLineEdit#PathBar:focus, QLineEdit#SearchBar:focus {
+    border: 1.5px solid #00a6ff;
+}
+
+/* Glass Tab Widget */
+QTabWidget::pane {
+    border: 1px solid #6eb9e6;
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #ffffff, stop:1.0 #f2f9fe);
+    border-radius: 8px;
+    top: -1px;
+}
+
+QTabBar::tab {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #ffffff, stop:0.5 #e2f2fc, stop:1.0 #c8e6fa);
+    color: #30658f;
+    padding: 7px 16px;
+    border: 1px solid #7ec4ec;
+    border-bottom: none;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    margin-right: 3px;
+}
+
+QTabBar::tab:selected {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #ffffff, stop:0.45 #f7fcff, stop:1.0 #ffffff);
+    color: #0080d2;
+    font-weight: bold;
+    border: 1px solid #6eb9e6;
+    border-bottom: 1px solid #ffffff;
+    padding: 8px 18px 7px 18px;
+}
+
+QTabBar::tab:hover:!selected {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+        stop:0 #ffffff, stop:0.5 #ebf7ff, stop:1.0 #dbf1fd);
+    color: #07243e;
+}
+
+QSvgWidget#logo_widget {
+    background-color: transparent;
+    border: none;
+}

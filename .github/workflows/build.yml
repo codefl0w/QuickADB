@@ -17,17 +17,20 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact_name: QuickADB_V5.3.0_Windows_x86_64
-            artifact_path: dist/QuickADB_V5.3.0_Windows_x86_64.exe
+            artifact_name: QuickADB_Windows_x86_64
+            artifact_path: dist/QuickADB_*_Windows_x86_64.exe
+          - os: windows-11-arm
+            artifact_name: QuickADB_Windows_arm64
+            artifact_path: dist/QuickADB_*_Windows_arm64.exe
           - os: ubuntu-22.04
-            artifact_name: QuickADB_V5.3.0_Linux_x86_64
-            artifact_path: QuickADB_V5.3.0_Linux_x86_64.AppImage
+            artifact_name: QuickADB_Linux_x86_64
+            artifact_path: QuickADB_*_Linux_x86_64.AppImage
           - os: macos-latest
-            artifact_name: QuickADB_V5.3.0_macOS_arm64
-            artifact_path: dist/QuickADB_V5.3.0_Darwin_arm64
+            artifact_name: QuickADB_macOS_arm64
+            artifact_path: dist/QuickADB_*_Darwin_arm64
           - os: macos-15-intel
-            artifact_name: QuickADB_V5.3.0_macOS_x86_64
-            artifact_path: dist/QuickADB_V5.3.0_Darwin_x86_64
+            artifact_name: QuickADB_macOS_x86_64
+            artifact_path: dist/QuickADB_*_Darwin_x86_64
 
     runs-on: ${{ matrix.os }}
 
@@ -74,8 +77,8 @@ jobs:
       - name: Upload Linux ARM64 AppImage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: QuickADB_V5.3.0_Linux_arm64
-          path: QuickADB_V5.3.0_Linux_arm64.AppImage
+          name: QuickADB_Linux_arm64
+          path: QuickADB_*_Linux_arm64.AppImage
           if-no-files-found: error
 
   release:

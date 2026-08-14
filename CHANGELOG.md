@@ -3,6 +3,26 @@ The changelog only includes what's new. To read feature descriptions, see [Featu
 
 For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md).
 
+# [5.4.0] - 14.08.2026
+
+### Added
+
+- Aero theme based on Frutiger Aero design language
+
+### Fixed
+
+- Windows ARM64 builds
+
+### Improved
+
+- QuickADB: Set lower maximum width for log output
+- Partition Manager: Speed up partition backup (dd bs=4M, lz4 on adb pull)
+- Partition Manager: Use ```/data/local/tmp/*``` (skips FUSE overhead)
+- Partition Manager: Improve partition pull status bar feedback
+- Partition Manager: Pre-check already existing images on phone before pull
+- ADBClient: 5 new helpers to further wrap subprocess calls
+- Overall code cleanup
+
 # [5.3.0] - 06.08.2026
 
 ### Added

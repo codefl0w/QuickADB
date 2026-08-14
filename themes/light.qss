@@ -231,3 +231,9 @@ QWidget#TBspacer {
 QLineEdit#PathBar, QLineEdit#SearchBar {
     background-color: #e0e0e0;
 }
+
+
+QSvgWidget#logo_widget {
+    background-color: transparent;
+    border: none;
+}

@@ -258,3 +258,9 @@ QTabBar::tab:selected {
 QTabBar::tab:hover:!selected {
     background-color: #1a2030;
 }
+
+
+QSvgWidget#logo_widget {
+    background-color: transparent;
+    border: none;
+}

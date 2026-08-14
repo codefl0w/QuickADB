@@ -15,6 +15,7 @@ from util.resource import get_clean_env, get_root_dir
 from util.toolpaths import ToolPaths
 from util.devicemanager import DeviceManager
 from util.thememanager import ThemeManager
+from util.adbclient import ADBClient
 
 root_dir = get_root_dir()
 if root_dir not in sys.path:
@@ -51,10 +52,10 @@ class LogcatWorker(QThread):
     finished_signal = pyqtSignal(bool, str)
     START_TAIL_COUNT = "1"
 
-    def __init__(self, adb_path: str, serial_args: list[str]):
+    def __init__(self, adb_path: str = None, serial_args: list[str] = None):
         super().__init__()
-        self.adb_path = adb_path
-        self.serial_args = list(serial_args)
+        self.adb_path = adb_path or ToolPaths.instance().adb
+        self.serial_args = list(serial_args or [])
         self.process: Optional[subprocess.Popen] = None
         self._stop_requested = False
 
@@ -69,30 +70,25 @@ class LogcatWorker(QThread):
     def run(self):
         # Start from the latest entry so the viewer doesn't spend seconds replaying
         # the entire device log buffer before it becomes responsive.
-        command = [
-            self.adb_path,
-            *self.serial_args,
+        args = [
             "logcat",
             "-T",
             self.START_TAIL_COUNT,
             "-v",
             "threadtime",
         ]
-        creationflags = 0
-        if os.name == "nt":
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 
         last_line = ""
         try:
             self.status_changed.emit("Starting adb logcat...")
-            self.process = subprocess.Popen(
-                command,
+            self.process = ADBClient.instance().popen(
+                args,
+                tool="adb",
+                use_serial=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-                env=get_clean_env(),
-                creationflags=creationflags,
             )
 
             if self.process.stdout is None:

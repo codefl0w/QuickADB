@@ -19,6 +19,7 @@ from typing import Mapping, Optional, Sequence
 from util.devicemanager import DeviceManager
 from util.resource import get_clean_env
 from util.toolpaths import ToolPaths
+from util.adbclient import ADBClient
 
 
 SUPPORTED_SINGLE_PACKAGE_EXTENSIONS = frozenset({".apk"})
@@ -254,7 +255,8 @@ def install_prepared_package(
     processes: list[subprocess.CompletedProcess] = []
 
     for command in commands:
-        process = subprocess.run(command, **_subprocess_kwargs())
+        args = command[1:] if command and ("adb" in os.path.basename(command[0]).lower()) else command
+        process = ADBClient.instance().run(args, tool="adb", use_serial=False)
         processes.append(process)
         if process.returncode != 0 and not continue_on_error:
             break
@@ -315,8 +317,9 @@ def install_remote_package(
 ) -> subprocess.CompletedProcess:
     """Install an APK that already exists on the device filesystem."""
     shell_command = build_remote_install_shell_command(remote_path, options=options, use_root=use_root)
-    command = _adb_prefix(adb_path=adb_path, serial=serial) + ["shell", shell_command]
-    return subprocess.run(command, **_subprocess_kwargs())
+    serial_args = _serial_args(serial)
+    args = serial_args + ["shell", shell_command]
+    return ADBClient.instance().run(args, tool="adb", use_serial=False)
 
 
 def _normalize_apk_paths(apk_paths: Sequence[str]) -> list[str]:

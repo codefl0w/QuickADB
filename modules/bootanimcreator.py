@@ -16,6 +16,7 @@ from typing import Optional, Dict, List, Tuple
 
 from util.resource import get_root_dir, resource_path
 from util.toolpaths import ToolPaths
+from util.adbclient import ADBClient
 
 root_dir = get_root_dir()
 if root_dir not in sys.path:
@@ -157,27 +158,18 @@ def cleanup_work_dirs():
 
 
 def find_remote_path_sync(adb_cmd: str = None) -> Optional[str]:
-    # adb_command returns a list like ['adb', '-s', 'SERIAL']
-    adb_base = adb_command(adb_cmd=adb_cmd)
+    """Check common paths on device using adb shell ls with root privileges."""
     for p in BOOT_PATHS:
         try:
-            # Windows specific: Create a new process group and hide the console window.
-            creationflags = 0
-            if os.name == 'nt':
-                creationflags = (
-                    subprocess.CREATE_NEW_PROCESS_GROUP |
-                    subprocess.CREATE_NO_WINDOW
-                )
-
-            proc = subprocess.run(adb_base + ["shell", "su", "-c", f'ls "{p}"'],
-                                  capture_output=True, text=True, timeout=6,
-                                  creationflags=creationflags)
+            proc = ADBClient.instance().run_shell(["su", "-c", f'ls "{p}"'], use_serial=True, timeout=6.0)
         except Exception:
             continue
         out = (proc.stdout or "") + (proc.stderr or "")
         if proc.returncode == 0 and "No such file or directory" not in out:
             return p
     return None
+
+find_bootanimation_path = find_remote_path_sync
 
 
 def pull_root_zip_sync(remote_path: str, adb_cmd: str = None, local_dest: str = None) -> bool:
@@ -189,46 +181,24 @@ def pull_root_zip_sync(remote_path: str, adb_cmd: str = None, local_dest: str = 
     if local_dest is None:
         raise RuntimeError("local_dest must be specified")
     
-    adb_base = adb_command(adb_cmd=adb_cmd)
-    adb_str = " ".join(f'"{c}"' if " " in c else c for c in adb_base)
-    
-    # Windows specific: Create a new process group and hide the console window.
-    creationflags = 0
-    if os.name == 'nt':
-        creationflags = (
-            subprocess.CREATE_NEW_PROCESS_GROUP |
-            subprocess.CREATE_NO_WINDOW
-        )
     try:
-        cp_cmd = adb_base + ["shell", "su", "-c", f'cp "{remote_path}" "{tmp_remote}" && chmod 0644 "{tmp_remote}"']
-        cp = subprocess.run(cp_cmd, capture_output=True, text=True, timeout=25, creationflags=creationflags)
+        cp = ADBClient.instance().run_shell(["su", "-c", f'cp "{remote_path}" "{tmp_remote}" && chmod 0644 "{tmp_remote}"'], use_serial=True, timeout=25.0)
         if cp.returncode == 0:
-            pull_cmd = adb_base + ["pull", tmp_remote, local_dest]
-            pull = subprocess.run(pull_cmd, capture_output=True, text=True, timeout=90, creationflags=creationflags)
+            pull = ADBClient.instance().pull(tmp_remote, local_dest, use_serial=True, timeout=90.0)
             if pull.returncode == 0 and os.path.exists(local_dest):
-                subprocess.run(adb_base + ["shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True, creationflags=creationflags)
+                ADBClient.instance().run_shell(["su", "-c", f'rm "{tmp_remote}"'], use_serial=True, timeout=10.0)
                 return True
     except Exception:
         pass
-    # fallback shell style
+
     try:
-        proc = subprocess.run(f'{adb_str} shell su -c \'cp "{remote_path}" "{tmp_remote}" && chmod 0644 "{tmp_remote}"\'',
-                              shell=True, capture_output=True, text=True, timeout=30, creationflags=creationflags)
-        if proc.returncode == 0:
-            pull = subprocess.run(adb_base + ["pull", tmp_remote, local_dest], capture_output=True, text=True, timeout=90, creationflags=creationflags)
-            if pull.returncode == 0 and os.path.exists(local_dest):
-                subprocess.run(f'{adb_str} shell "su -c rm \\"{tmp_remote}\\""', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags)
-                return True
-    except Exception:
-        pass
-    try:
-        proc1 = subprocess.run(adb_base + ["shell", f'su -c cp "{remote_path}" "{tmp_remote}"'], capture_output=True, text=True, timeout=20, creationflags=creationflags)
+        proc1 = ADBClient.instance().run_shell(["su", "-c", f'cp "{remote_path}" "{tmp_remote}"'], use_serial=True, timeout=20.0)
         if proc1.returncode == 0:
-            proc2 = subprocess.run(adb_base + ["shell", f'su -c chmod 0644 "{tmp_remote}"'], capture_output=True, text=True, timeout=10, creationflags=creationflags)
+            proc2 = ADBClient.instance().run_shell(["su", "-c", f'chmod 0644 "{tmp_remote}"'], use_serial=True, timeout=10.0)
             if proc2.returncode == 0:
-                pull = subprocess.run(adb_base + ["pull", tmp_remote, local_dest], capture_output=True, text=True, timeout=90, creationflags=creationflags)
+                pull = ADBClient.instance().pull(tmp_remote, local_dest, use_serial=True, timeout=90.0)
                 if pull.returncode == 0 and os.path.exists(local_dest):
-                    subprocess.run(adb_base + ["shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True, creationflags=creationflags)
+                    ADBClient.instance().run_shell(["su", "-c", f'rm "{tmp_remote}"'], use_serial=True, timeout=10.0)
                     return True
     except Exception:
         pass
@@ -551,8 +521,8 @@ class BootAnimWidget(QWidget):
         self.backup_dir = os.path.join(root_dir, "bootanim_backups")
         os.makedirs(self.backup_dir, exist_ok=True)
 
-        self.seq_current: List[Tuple[QPixmap, int]] = []
-        self.seq_created: List[Tuple[QPixmap, int]] = []
+        self.seq_current: List[Tuple[QPixmap, int, str]] = []
+        self.seq_created: List[Tuple[QPixmap, int, str]] = []
 
         self.timer_current = QTimer(self)
         self.timer_created = QTimer(self)
@@ -1163,18 +1133,10 @@ class BootAnimWidget(QWidget):
             raise RuntimeError("Local ZIP missing")
         if not remote_path:
             raise RuntimeError("Remote install path unknown. Run Find/Pull first.")
-        
-        # Windows specific: Create a new process group and hide the console window.
-        creationflags = 0
-        if os.name == 'nt':
-            creationflags = (
-                subprocess.CREATE_NEW_PROCESS_GROUP |
-                subprocess.CREATE_NO_WINDOW
-            )
 
         tmp_remote = "/data/local/tmp/quickadb_push_bootanim.zip"
         logs.append(f"[PUSH] Pushing {local_zip} -> {tmp_remote} via adb push")
-        push = subprocess.run([adb_cmd, "push", local_zip, tmp_remote], capture_output=True, text=True, timeout=300, creationflags=creationflags)
+        push = ADBClient.instance().push(local_zip, tmp_remote, use_serial=True, timeout=300.0)
         logs.append(f"[PUSH] adb push rc={push.returncode}")
         self._log_proc(logs, push, "push")
         if push.returncode != 0:
@@ -1182,31 +1144,30 @@ class BootAnimWidget(QWidget):
         # attempt copy using root
         cp_cmd = f'su -c cp "{tmp_remote}" "{remote_path}" && su -c chmod 0644 "{remote_path}"'
         logs.append(f"[PUSH] Attempting root copy to {remote_path}")
-        proc = subprocess.run([adb_cmd, "shell", cp_cmd], shell=False, capture_output=True, text=True, timeout=60, creationflags=creationflags)
+        proc = ADBClient.instance().run_shell(cp_cmd, use_serial=True, timeout=60.0)
         logs.append(f"[PUSH] root copy rc={proc.returncode}")
         self._log_proc(logs, proc, "root copy")
         # if success
         if proc.returncode == 0:
             # cleanup tmp remote
-            subprocess.run([adb_cmd, "shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True, creationflags=creationflags)
+            ADBClient.instance().run_shell(["su", "-c", f'rm "{tmp_remote}"'], use_serial=True, timeout=10.0)
             logs.append(f"[PUSH] Installed to {remote_path} (root copy succeeded)")
             return "\n".join(logs)
         # try remount RW then copy
         logs.append("[PUSH] Root copy failed; attempting remount and retry")
-        remount_cmd = [adb_cmd, "shell", "su", "-c", 'mount -o remount,rw /system || mount -o remount,rw /system_root || true']
-        rem = subprocess.run(remount_cmd, capture_output=True, text=True, timeout=20, creationflags=creationflags)
+        rem = ADBClient.instance().run_shell(["su", "-c", 'mount -o remount,rw /system || mount -o remount,rw /system_root || true'], use_serial=True, timeout=20.0)
         logs.append(f"[PUSH] remount rc={rem.returncode}")
         self._log_proc(logs, rem, "remount")
         # retry copy
-        proc2 = subprocess.run([adb_cmd, "shell", cp_cmd], shell=False, capture_output=True, text=True, timeout=60, creationflags=creationflags)
+        proc2 = ADBClient.instance().run_shell(cp_cmd, use_serial=True, timeout=60.0)
         logs.append(f"[PUSH] retry root copy rc={proc2.returncode}")
         self._log_proc(logs, proc2, "retry")
         if proc2.returncode == 0:
-            subprocess.run([adb_cmd, "shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True, creationflags=creationflags)
+            ADBClient.instance().run_shell(["su", "-c", f'rm "{tmp_remote}"'], use_serial=True, timeout=10.0)
             logs.append(f"[PUSH] Installed to {remote_path} after remount")
             return "\n".join(logs)
         # final cleanup and error
-        subprocess.run([adb_cmd, "shell", "su", "-c", f'rm "{tmp_remote}"'], capture_output=True, creationflags=creationflags)
+        ADBClient.instance().run_shell(["su", "-c", f'rm "{tmp_remote}"'], use_serial=True, timeout=10.0)
         logs.append("[PUSH] All methods failed to copy to target.")
         raise RuntimeError("\n".join(logs))
 
@@ -1389,7 +1350,6 @@ class BootAnimWidget(QWidget):
             else:
                 self.playing_created = False
             a["play_btn"].setText("▶")
-            self.log(f"[PAUSE] Paused at frame {getattr(self, a['play_index'])}")
         else:
             self._start(which)
 

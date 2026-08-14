@@ -13,6 +13,8 @@ import webbrowser
 
 from util.resource import get_root_dir, resource_path
 from util.toolpaths import ToolPaths
+from util.adbclient import ADBClient
+from util.devicemanager import DeviceManager
 root_dir = get_root_dir()
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
@@ -49,32 +51,18 @@ class DeviceScannerWorker(QThread):
     # Emits (adb_devices_list, fastboot_devices_list)
     devices_found = pyqtSignal(list, list)
 
-    def __init__(self, platform_tools_path):
+    def __init__(self, platform_tools_path=None):
         super().__init__()
-        self.platform_tools_path = platform_tools_path
+        self.platform_tools_path = platform_tools_path or ToolPaths.instance().platform_tools_dir
         self.running = True
 
     def run(self):
-        adb_cmd = ToolPaths.instance().adb
-        fastboot_cmd = ToolPaths.instance().fastboot
-
         self.status_msg.emit("Checking for connected devices...")
         self.log_msg.emit("[INFO] Starting device scan...")
 
         try:
-            # Windows: suppress console window.
-            creationflags = 0
-            if os.name == "nt":
-                creationflags = (
-                    subprocess.CREATE_NEW_PROCESS_GROUP |
-                    subprocess.CREATE_NO_WINDOW
-                )
-
-            # 1. Check ADB
-            adb_proc = subprocess.run(
-                [adb_cmd, "devices"],
-                capture_output=True, text=True, creationflags=creationflags
-            )
+            # 1. Check ADB (global devices command, no serial targeting)
+            adb_proc = ADBClient.instance().devices(tool="adb")
             adb_devs = [
                 parts[0]
                 for line in adb_proc.stdout.splitlines()[1:]
@@ -82,11 +70,8 @@ class DeviceScannerWorker(QThread):
                 if len(parts) >= 2 and parts[1].lower() == "device"
             ]
 
-            # 2. Check Fastboot
-            fastboot_proc = subprocess.run(
-                [fastboot_cmd, "devices"],
-                capture_output=True, text=True, creationflags=creationflags
-            )
+            # 2. Check Fastboot (global devices command, no serial targeting)
+            fastboot_proc = ADBClient.instance().devices(tool="fastboot")
             fb_devs = [
                 parts[0]
                 for line in fastboot_proc.stdout.splitlines()
@@ -231,13 +216,19 @@ class GSIFlasherUI(QMainWindow):
 
     def run_command_async(self, command, callback=None):
         """Execute an ADB/Fastboot command via CommandRunner, log output, call callback on finish."""
-        from util.devicemanager import DeviceManager
-        serial_args = DeviceManager.instance().serial_args()
-
         if isinstance(command, list):
-            if command and ("adb" in command[0] or "fastboot" in command[0]):
-                command = [command[0]] + serial_args + command[1:]
-            cmd_str = " ".join(f'"{c}"' if " " in c else c for c in command)
+            first = command[0] if command else ""
+            if "fastboot" in first:
+                tool = "fastboot"
+                args = command[1:]
+            elif "adb" in first:
+                tool = "adb"
+                args = command[1:]
+            else:
+                tool = "fastboot"
+                args = command
+            full_cmd = ADBClient.instance().build_command(args, tool=tool, use_serial=True)
+            cmd_str = " ".join(f'"{c}"' if " " in c else c for c in full_cmd)
         else:
             cmd_str = command
 

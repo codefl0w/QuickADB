@@ -15,6 +15,7 @@ import re
 from util.apkapi import APKInstallOptions, install_remote_package
 from util.resource import get_root_dir, resource_path
 from util.toolpaths import ToolPaths
+from util.adbclient import ADBClient
 root_dir = get_root_dir()
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
@@ -39,30 +40,17 @@ class ADBThread(QThread):
 
     def __init__(self, adb_path, args):
         super().__init__()
-        self.adb_path = adb_path
+        self.adb_path = adb_path or ToolPaths.instance().adb
         self.args = args  # list of args after the adb binary
 
     def run(self):
         try:
-
-            full_command = [self.adb_path] + DeviceManager.instance().serial_args() + self.args
-
-            creationflags = 0
-            if os.name == 'nt':
-                creationflags = (
-                    subprocess.CREATE_NEW_PROCESS_GROUP |
-                    subprocess.CREATE_NO_WINDOW
-                )
-
-            output = subprocess.check_output(full_command, text=True, stderr=subprocess.STDOUT, creationflags=creationflags)
-            self.command_finished.emit(output, False)
-        except subprocess.CalledProcessError as e:
-            out = ""
-            try:
-                out = e.output
-            except Exception:
-                out = str(e)
-            self.command_finished.emit(out or str(e), True)
+            res = ADBClient.instance().run(self.args, tool="adb", use_serial=True)
+            if res.returncode == 0:
+                self.command_finished.emit(res.stdout, False)
+            else:
+                out = res.stdout if res.stdout else res.stderr
+                self.command_finished.emit(out or f"Exit code {res.returncode}", True)
         except Exception as e:
             self.command_finished.emit(str(e), True)
 
@@ -97,29 +85,21 @@ class TransferRunner(QThread):
 
     def __init__(self, adb_path, args, cwd=None):
         super().__init__()
-        self.adb_path = adb_path
+        self.adb_path = adb_path or ToolPaths.instance().adb
         self.args = args
         self.cwd = cwd or os.getcwd()
 
     def run(self):
         try:
-
-            cmd = [self.adb_path] + DeviceManager.instance().serial_args() + self.args
-            creationflags = 0
-            if os.name == 'nt':
-                creationflags = (
-                    subprocess.CREATE_NEW_PROCESS_GROUP |
-                    subprocess.CREATE_NO_WINDOW
-                )
-
-            proc = subprocess.Popen(
-                cmd,
+            proc = ADBClient.instance().popen(
+                self.args,
+                tool="adb",
+                use_serial=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=self.cwd,
-                universal_newlines=True,
-                bufsize=1,
-                creationflags=creationflags
+                text=True,
+                bufsize=1
             )
 
             last_line = ""
@@ -204,7 +184,7 @@ class ADBFileExplorer(QMainWindow):
         return dlg
 
     # -----------------------------
-    # UI Initialization (grouped)
+    #      UI Initialization
     # -----------------------------
     def init_ui(self):
         self.init_menu_bar()

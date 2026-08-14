@@ -17,6 +17,7 @@ from typing import Optional, List, Tuple, Callable
 from util.resource import get_root_dir, resource_path, get_clean_env, open_url_safe
 from util.toolpaths import ToolPaths
 from util.devicemanager import DeviceManager, USBMonitorWorker
+from util.adbclient import ADBClient
 root_dir = get_root_dir()
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
@@ -66,8 +67,8 @@ class QuickADBApp(QMainWindow):
     # Main window
 
     # Constants
-    APP_VERSION = "V5.3.0"
-    APP_SUFFIX = "Full"
+    APP_VERSION = "V5.3.1"
+    APP_SUFFIX = "Full" # Could be beta or personal builds
     BUTTON_WIDTH = 150
     BUTTON_HEIGHT = 40
     GITHUB_URL = "https://github.com/codefl0w/QuickADB"
@@ -143,7 +144,6 @@ class QuickADBApp(QMainWindow):
         device_layout.addWidget(self.device_combo)
 
         self.refresh_devices_btn = QPushButton("⟳")
-        self.refresh_devices_btn.setFixedWidth(30)
         self.refresh_devices_btn.setToolTip("Refresh device list")
         self.refresh_devices_btn.clicked.connect(self.check_devices)
         device_layout.addWidget(self.refresh_devices_btn)
@@ -188,13 +188,13 @@ class QuickADBApp(QMainWindow):
 
         # Logs section (right side)
         logs_frame = QFrame()
-        logs_frame.setMaximumWidth(500)
+        logs_frame.setMaximumWidth(300)
         logs_layout = QVBoxLayout(logs_frame)
         logs_layout.addWidget(QLabel("Logs", alignment=Qt.AlignmentFlag.AlignCenter))
         self.logs_text = QTextEdit()
         self.logs_text.setObjectName("MainLog")
         self.logs_text.setReadOnly(True)
-        self.logs_text.setMinimumSize(200, 370)
+        self.logs_text.setMaximumWidth(300)
         logs_layout.addWidget(self.logs_text)
         self.extract_button = QPushButton("Export Logs")
         self.extract_button.clicked.connect(self.export_logs)
@@ -586,26 +586,9 @@ class QuickADBApp(QMainWindow):
     def _fetch_version(self, executable: str, command: str, version_attr: str):
         """Worker function to get version info."""
         try:
-            exe_path = self._get_executable_path(executable)
-            if not exe_path: return
-            # Windows specific: Create a new process group and hide the console window.
-            creationflags = 0
-            if sys.platform == "win32":
-                creationflags = (
-                    subprocess.CREATE_NEW_PROCESS_GROUP |
-                    subprocess.CREATE_NO_WINDOW
-                )
-
-            result = subprocess.run(
-                [exe_path, command],
-                capture_output=True,
-                text=True,
-                check=False,
-                env=get_clean_env(),
-                creationflags=creationflags
-            )
-            if result.returncode == 0:
-                setattr(self, version_attr, result.stdout.splitlines()[0])
+            ver = ADBClient.instance().get_version(tool=executable)
+            if ver:
+                setattr(self, version_attr, ver)
             else:
                 setattr(self, version_attr, f"{executable} not found or error occurred")
         except Exception as e:
@@ -664,7 +647,7 @@ class QuickADBApp(QMainWindow):
             f"<p>Version: {self.APP_VERSION} {self.APP_SUFFIX}</p>"
             f"<p>{self.adb_version}</p><p>{self.fastboot_version}</p><hr>"
             f"<p style='font-size: 8pt;'>Credits:<br>"
-            f"- payload-dumper-go by ssut — payload.bin extraction<br>"
+            f"- payload-dumper-go by ssut - payload.bin extraction<br>"
             f"- SDK Platform Tools by Google - ADB and fastboot binaries<br>"
             f"- PyQt6 by Riverbank Computing - Python adaptation of Qt6<br>"
             f"- Magisk by topjohnwu - Magisk internals &amp; logo<br>"
@@ -723,6 +706,7 @@ class QuickADBApp(QMainWindow):
             self.logo_layout.removeWidget(self.logo_widget)
             self.logo_widget.deleteLater()
         self.logo_widget = QSvgWidget(svg_path)
+        self.logo_widget.setObjectName("logo_widget")
         self.logo_widget.setFixedSize(250, 65)
         self.logo_layout.addWidget(self.logo_widget, 0, Qt.AlignmentFlag.AlignCenter)
 

@@ -24,9 +24,9 @@ PLATFORM_TOOLS_URLS = {
     "Darwin": "https://dl.google.com/android/repository/platform-tools-latest-darwin.zip"
 }
 
+# QuickADB uses payload-dumper-go by ssut. Since it doesn't have ARM64 builds, we cannot incorporate the dumper on WinARM versions.
 PAYLOAD_DUMPER_URLS = {
     ("Windows", "x86_64"): "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_windows_amd64.tar.gz",
-    ("Windows", "arm64"): "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_windows_arm64.tar.gz",
     ("Linux", "x86_64"): "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_linux_amd64.tar.gz",
     ("Linux", "arm64"): "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_linux_arm64.tar.gz",
     ("Darwin", "x86_64"): "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_darwin_amd64.tar.gz",
@@ -41,10 +41,10 @@ APPIMAGE_TOOL_URLS = {
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 UTIL_DIR = os.path.join(ROOT_DIR, "util")
 DIST_DIR = os.path.join(ROOT_DIR, "dist")
-APP_VERSION = "V5.3.0"
+APP_VERSION = "V5.3.1" # I should probably make this value global
 
 def get_arch():
-    """Detect machine architecture and normalize to x86_64 or arm64."""
+    # Detect machine architecture and normalize to x86_64 or arm64
     machine = platform.machine().lower()
     if machine in ("arm64", "aarch64", "armv8l"):
         return "arm64"
@@ -56,11 +56,7 @@ def download_file(url, dest):
         urllib.request.urlretrieve(url, dest)
     except Exception as e:
         print(f"Failed to download {url}: {e}")
-        # Fallback for Windows arm64 if ssut hasn't built a native win arm64 binary
-        if "windows_arm64" in url:
-            fallback_url = url.replace("windows_arm64", "windows_amd64")
-            print(f"Attempting fallback to {fallback_url}...")
-            urllib.request.urlretrieve(fallback_url, dest)
+
 
 def extract_zip(src, dest_dir):
     print(f"Extracting {src} to {dest_dir}...")
@@ -157,7 +153,7 @@ exec QuickADB "$@"
         print(f"AppImage creation failed with exit code {e.returncode}")
 
 def cleanup_processes():
-    """Terminated known background processes to avoid file locking on Windows."""
+    # Terminate known background processes to avoid file locking on Windows
     if platform.system() != "Windows":
         return
 

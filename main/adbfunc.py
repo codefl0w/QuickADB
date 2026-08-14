@@ -12,8 +12,9 @@ import sys
 import os
 
 from util.apkapi import APKInstallOptions, install_local_package, supported_package_dialog_filter
-from util.resource import get_root_dir, resource_path
+from util.resource import get_root_dir, resource_path, get_clean_env
 from util.toolpaths import ToolPaths
+from util.adbclient import ADBClient
 root_dir = get_root_dir()
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
@@ -33,14 +34,13 @@ class CommandRunner(QThread):
 
     Signals:
     output_signal(str, str): Emits each line of output with a tag ("Output" or "Error").
-
     """
     output_signal = pyqtSignal(str, str)
 
-    def __init__(self, command: str, platform_tools_path: str, env: dict = None):
+    def __init__(self, command: str, platform_tools_path: str = None, env: dict = None):
         super().__init__()
         self.command = command
-        self.platform_tools_path = platform_tools_path
+        self.platform_tools_path = platform_tools_path or ToolPaths.instance().platform_tools_dir
         self.env = env
 
     def _stream_reader(self, stream, tag: str):
@@ -59,14 +59,6 @@ class CommandRunner(QThread):
     def run(self):
         """Executes the command and starts threads to monitor its output."""
         try:
-            # Windows specific: Create a new process group and hide the console window.
-            creationflags = 0
-            if sys.platform == "win32":
-                creationflags = (
-                    subprocess.CREATE_NEW_PROCESS_GROUP |
-                    subprocess.CREATE_NO_WINDOW
-                )
-
             process = subprocess.Popen(
                 self.command,
                 stdout=subprocess.PIPE,
@@ -75,8 +67,8 @@ class CommandRunner(QThread):
                 cwd=self.platform_tools_path,
                 text=True,
                 bufsize=1,  # Line-buffered
-                env=self.env,
-                creationflags=creationflags
+                env=self.env or get_clean_env(),
+                creationflags=ADBClient.get_creation_flags()
             )
 
             # Start reader threads for stdout and stderr to prevent blocking
@@ -122,38 +114,26 @@ class DeviceInfoWorker(QThread):
     info_ready = pyqtSignal(str)
     SECTION_SEPARATOR = "=" * 36
 
-    def __init__(self, platform_tools_path):
+    def __init__(self, platform_tools_path=None):
         super().__init__()
-        self.platform_tools_path = platform_tools_path
+        self.platform_tools_path = platform_tools_path or ToolPaths.instance().platform_tools_dir
         self.adb_path = ToolPaths.instance().adb
 
     def run(self):
         command_sections = self._get_device_commands()
         results = []
 
-        # Windows specific: Create a new process group and hide the console window.
-        creationflags = 0
-        if sys.platform == "win32":
-            creationflags = (
-                subprocess.CREATE_NEW_PROCESS_GROUP |
-                subprocess.CREATE_NO_WINDOW
-            )
-
         for section_name, commands in command_sections:
             results.append(self.SECTION_SEPARATOR)
             results.append(section_name.upper())
             results.append(self.SECTION_SEPARATOR)
 
-            for label, command in commands:
+            for label, shell_cmd in commands:
                 try:
-                    result = subprocess.run(
-                        command,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        shell=True,
-                        timeout=10,
-                        creationflags=creationflags
+                    result = ADBClient.instance().run_shell(
+                        shell_cmd,
+                        use_serial=True,
+                        timeout=10
                     )
 
                     if result.returncode == 0:
@@ -173,38 +153,35 @@ class DeviceInfoWorker(QThread):
         self.info_ready.emit("\n".join(results).strip())
 
     def _get_device_commands(self):
-        from util.devicemanager import DeviceManager
-        serial_flag = DeviceManager.instance().serial_flag()
-        adb_cmd = f'"{self.adb_path}" {serial_flag}'
         return [
             ("Hardware Info", [
-                ("Board", f"{adb_cmd} shell getprop ro.product.board"),
-                ("Chipset", f"{adb_cmd} shell getprop ro.hardware"),
-                ("Architecture", f"{adb_cmd} shell getprop ro.product.cpu.abi"),
-                ("Serial Number", f"{adb_cmd} shell getprop ro.serialno"),
-                ("Resolution", f"{adb_cmd} shell wm size"),
-                ("Total RAM", f"{adb_cmd} shell cat /proc/meminfo"),
-                ("Total Storage", f"{adb_cmd} shell df"),
+                ("Board", "getprop ro.product.board"),
+                ("Chipset", "getprop ro.hardware"),
+                ("Architecture", "getprop ro.product.cpu.abi"),
+                ("Serial Number", "getprop ro.serialno"),
+                ("Resolution", "wm size"),
+                ("Total RAM", "cat /proc/meminfo"),
+                ("Total Storage", "df"),
             ]),
             ("Android Info", [
-                ("Android Version", f"{adb_cmd} shell getprop ro.build.version.release"),
-                ("SDK Version", f"{adb_cmd} shell getprop ro.build.version.sdk"),
-                ("Minimum SDK", f"{adb_cmd} shell getprop ro.build.version.min_supported_target_sdk"),
-                ("Build ID", f"{adb_cmd} shell getprop ro.build.id"),
-                ("Build Type", f"{adb_cmd} shell getprop ro.build.type"),
-                ("Build Date", f"{adb_cmd} shell getprop ro.build.date"),
-                ("Security Patch", f"{adb_cmd} shell getprop ro.build.version.security_patch"),
-                ("Treble Support", f"{adb_cmd} shell getprop ro.treble.enabled"),
-                ("A/B Support", f"{adb_cmd} shell getprop ro.build.ab_update"),
-                ("Dynamic Partitions", f"{adb_cmd} shell getprop ro.boot.dynamic_partitions"),
-                ("Fingerprint", f"{adb_cmd} shell getprop ro.build.fingerprint"),
+                ("Android Version", "getprop ro.build.version.release"),
+                ("SDK Version", "getprop ro.build.version.sdk"),
+                ("Minimum SDK", "getprop ro.build.version.min_supported_target_sdk"),
+                ("Build ID", "getprop ro.build.id"),
+                ("Build Type", "getprop ro.build.type"),
+                ("Build Date", "getprop ro.build.date"),
+                ("Security Patch", "getprop ro.build.version.security_patch"),
+                ("Treble Support", "getprop ro.treble.enabled"),
+                ("A/B Support", "getprop ro.build.ab_update"),
+                ("Dynamic Partitions", "getprop ro.boot.dynamic_partitions"),
+                ("Fingerprint", "getprop ro.build.fingerprint"),
             ]),
             ("Device Specs", [
-                ("Manufacturer", f"{adb_cmd} shell getprop ro.product.manufacturer"),
-                ("Model", f"{adb_cmd} shell getprop ro.product.model"),
-                ("Product Name", f"{adb_cmd} shell getprop ro.product.name"),
-                ("Carrier", f"{adb_cmd} shell getprop ro.carrier"),
-                ("Root Method", f"{adb_cmd} shell su -v"),
+                ("Manufacturer", "getprop ro.product.manufacturer"),
+                ("Model", "getprop ro.product.model"),
+                ("Product Name", "getprop ro.product.name"),
+                ("Carrier", "getprop ro.carrier"),
+                ("Root Method", "su -v"),
             ]),
         ]
 
@@ -217,8 +194,6 @@ class DeviceInfoWorker(QThread):
         
         formatter = formatters.get(label)
         return formatter(output) if formatter else output
-
-
 
     def _parse_total_ram(self, output):
         # Parse total RAM from /proc/meminfo
@@ -240,7 +215,6 @@ class DeviceInfoWorker(QThread):
 
 
 class DeviceInfoDialog(QDialog):
-    
     def __init__(self, platform_tools_path, parent=None):
         super().__init__(parent)
         self._setup_ui()
@@ -269,14 +243,10 @@ class DeviceInfoDialog(QDialog):
         self.setLayout(layout)
 
     def _start_info_worker(self, platform_tools_path):
-
         self.worker = DeviceInfoWorker(platform_tools_path)
         self.worker.info_ready.connect(self.text_display.setPlainText)
         self.worker.finished.connect(self.worker.deleteLater)  # Clean up
         self.worker.start()
-
-
-# [Legacy WirelessADBDialog removed - now using modules.wirelessadb]
 
 class InstallFlagsDialog(QDialog):
     def __init__(self, current_flags, parent=None):

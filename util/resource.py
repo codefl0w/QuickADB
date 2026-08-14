@@ -6,6 +6,7 @@ resource.py - Handles resource management for QuickADB.
 
 import sys
 import os
+import webbrowser
 
 def get_root_dir() -> str:
     """
@@ -58,7 +59,6 @@ def open_url_safe(url: str):
     """
     Opens a URL in the host's web browser while ensuring the environment is clean.
     """
-    import webbrowser
     # We must modify os.environ directly for webbrowser.open as it doesn't take an env param
     lp_key = 'LD_LIBRARY_PATH'
     lp_orig_key = 'LD_LIBRARY_PATH_ORIG'

@@ -21,6 +21,7 @@ import requests
 
 from util.devicemanager import DeviceManager
 from util.toolpaths import ToolPaths
+from util.adbclient import ADBClient
 
 
 MAGISK_RELEASE_API = "https://api.github.com/repos/topjohnwu/Magisk/releases/latest"
@@ -619,19 +620,17 @@ class MagiskPatcher:
         return stage_dir, image_name
 
     def _run_adb_text(self, args: list[str], timeout: int = 30) -> str:
-        command = [self.adb_path] + self.serial_args + args
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
+        cmd_args = self.serial_args + args
+        completed = ADBClient.instance().run(
+            cmd_args,
+            tool="adb",
+            use_serial=False,
             timeout=timeout,
-            creationflags=self._creationflags(),
         )
         if completed.returncode != 0:
             error_text = (completed.stdout or completed.stderr or "").strip()
             raise RuntimeError(error_text or f"ADB command failed: {' '.join(args)}")
-        return completed.stdout
+        return completed.stdout or ""
 
     def _safe_adb_text(self, args: list[str], timeout: int = 30) -> str:
         try:
@@ -669,14 +668,12 @@ class MagiskPatcher:
         return values
 
     def _run_adb_checked(self, args: list[str], timeout: int = 300) -> str:
-        command = [self.adb_path] + self.serial_args + args
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
+        cmd_args = self.serial_args + args
+        completed = ADBClient.instance().run(
+            cmd_args,
+            tool="adb",
+            use_serial=False,
             timeout=timeout,
-            creationflags=self._creationflags(),
         )
         if completed.returncode != 0:
             output = (completed.stdout or completed.stderr or "").strip()
@@ -684,14 +681,15 @@ class MagiskPatcher:
         return completed.stdout or ""
 
     def _run_adb_stream(self, args: list[str], log_callback: Optional[Callable[[str], None]] = None):
-        command = [self.adb_path] + self.serial_args + args
-        process = subprocess.Popen(
-            command,
+        cmd_args = self.serial_args + args
+        process = ADBClient.instance().popen(
+            cmd_args,
+            tool="adb",
+            use_serial=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            creationflags=self._creationflags(),
         )
 
         last_output = ""

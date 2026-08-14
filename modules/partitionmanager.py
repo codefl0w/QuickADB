@@ -13,6 +13,7 @@ import os
 from util.resource import get_root_dir, resource_path
 from util.toolpaths import ToolPaths
 from util.devicemanager import DeviceManager
+from util.adbclient import ADBClient
 root_dir = get_root_dir()
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
@@ -27,7 +28,6 @@ from PyQt6.QtWidgets import (
     QProgressDialog, QTextEdit, QHeaderView, QStyledItemDelegate
 )
 from PyQt6.QtGui import QFont, QStandardItemModel, QStandardItem, QColor
-from util.devicemanager import DeviceManager
 
 class FormatSize:
     """Helper class to format file sizes in human-readable format."""
@@ -53,36 +53,22 @@ class PartitionLoadWorker(QThread):
     finished_loading = pyqtSignal()
     error_occurred = pyqtSignal(str)
     
-    def __init__(self, platform_tools_path):
+    def __init__(self, platform_tools_path=None):
         super().__init__()
-        self.platform_tools_path = platform_tools_path
+        self.platform_tools_path = platform_tools_path or ToolPaths.instance().platform_tools_dir
         
     def run(self):
         """Load partitions from the device."""
         try:
             self.log_message.emit("Loading and analyzing partitions from device...")
-            adb_exe = ToolPaths.instance().adb
-
-            serial = DeviceManager.instance().serial_args()
             
             # Use cat /proc/partitions for accurate sizes and ls -lL for name mapping.
             remote_script = "cat /proc/partitions; echo '---SEP---'; ls -lL /dev/block/by-name"
             
-            command = [
-                adb_exe, *serial, 'shell', 'su', '-c', remote_script
-            ]
-            creationflags = 0
-            if sys.platform == "win32":
-                creationflags = (
-                    subprocess.CREATE_NEW_PROCESS_GROUP |
-                    subprocess.CREATE_NO_WINDOW
-                )
-            result = subprocess.run(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                creationflags=creationflags,
-                text=True
+            result = ADBClient.instance().run(
+                ['shell', 'su', '-c', remote_script],
+                tool="adb",
+                use_serial=True
             )
             
             if result.returncode != 0:
@@ -155,9 +141,40 @@ class PartitionLoadWorker(QThread):
         except Exception as e:
             self.error_occurred.emit(f"Error loading partitions:\n{str(e)}")
 
+class MovingAverageSpeed:
+    """Tracks (timestamp, bytes) samples and computes moving average speed over window_seconds."""
+    def __init__(self, window_seconds: float = 5.0):
+        self.window_seconds = window_seconds
+        self.samples = []
+
+    def reset(self):
+        self.samples.clear()
+
+    def add_sample(self, current_bytes: int, now: float = None):
+        if now is None:
+            now = time.time()
+        self.samples.append((now, current_bytes))
+        cutoff = now - self.window_seconds
+        self.samples = [s for s in self.samples if s[0] >= cutoff]
+
+    def get_speed_mb_s(self) -> float:
+        if len(self.samples) < 2:
+            return 0.0
+        t_first, b_first = self.samples[0]
+        t_last, b_last = self.samples[-1]
+        dt = t_last - t_first
+        if dt <= 0.05:
+            return 0.0
+        db = b_last - b_first
+        if db < 0:
+            return 0.0
+        return (db / (1024 * 1024)) / dt
+
+
 class PartitionPullWorker(QThread):
     log_message = pyqtSignal(str)
     progress = pyqtSignal(str)
+    progress_detail = pyqtSignal(int, str)  # percent (0-100), detailed status string
     finished_with_status = pyqtSignal(bool, int, int)  # success flag, success count, total count
     
     def __init__(self, platform_tools_path, selected_partitions, save_dir):
@@ -170,105 +187,193 @@ class PartitionPullWorker(QThread):
         try:
             total_partitions = len(self.selected_partitions)
             successful_pulls = 0
-            adb_exe = ToolPaths.instance().adb
-            serial = DeviceManager.instance().serial_args()
             
             for i, partition_info in enumerate(self.selected_partitions):
                 partition_name = partition_info['name']
                 total_bytes = partition_info.get('size_bytes', 0)
                 current_num = i + 1
                 
-                # Step 1: Copy the partition to /sdcard with bs=4M
-                self.progress.emit(f"({current_num}/{total_partitions}) Copying {partition_name}...")
-                self.log_message.emit(f"Copying {partition_name} to device sdcard...")
-                
-                target_path = f"/sdcard/{partition_name}.img"
-                dd_command = [
-                    adb_exe, *serial,
-                    'shell', 'su', '-c',
-                    f'dd if=/dev/block/by-name/{partition_name} of={target_path} bs=4M'
-                ]
-                creationflags = 0
-                if sys.platform == "win32":
-                    creationflags = (
-                        subprocess.CREATE_NEW_PROCESS_GROUP |
-                        subprocess.CREATE_NO_WINDOW
-                    )
+                target_path = f"/data/local/tmp/{partition_name}.img"
+                skip_dd = False
 
-                # Start dd process
-                process = subprocess.Popen(
-                    dd_command, 
-                    stdout=subprocess.PIPE, 
-                    stderr=subprocess.PIPE, 
-                    text=True,
-                    creationflags=creationflags
+                # Check if file already exists on device
+                check_res = ADBClient.instance().run_silent(
+                    ['shell', 'su', '-c', f'ls -l {target_path}'],
+                    use_serial=True,
+                    timeout=5.0
+                )
+                if check_res and "No such file" not in check_res:
+                    parts = check_res.strip().split()
+                    if len(parts) >= 5 and parts[4].isdigit():
+                        existing_size = int(parts[4])
+                        if existing_size > 0 and (total_bytes <= 0 or existing_size == total_bytes or abs(total_bytes - existing_size) < 4096):
+                            skip_dd = True
+                            total_bytes = existing_size
+                            self.log_message.emit(f"Found existing {partition_name}.img on device ({FormatSize.human_readable_size(existing_size)}). Skipping dd.")
+                            self.progress.emit(f"({current_num}/{total_partitions}) {partition_name}: exists on device, skipping dd...")
+
+                if not skip_dd:
+                    # Step 1: Copy the partition to /data/local/tmp with bs=4M
+                    initial_msg = f"({current_num}/{total_partitions}) Creating image: {partition_name} on device..."
+                    self.progress.emit(initial_msg)
+                    self.progress_detail.emit(0, initial_msg)
+                    self.log_message.emit(f"Creating image for {partition_name} at /data/local/tmp/...")
+                    
+                    dd_args = [
+                        'shell', 'su', '-c',
+                        f'dd if=/dev/block/by-name/{partition_name} of={target_path} bs=4M'
+                    ]
+
+                    # Start dd process
+                    process = ADBClient.instance().popen(
+                        dd_args,
+                        tool="adb",
+                        use_serial=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True
+                    )
+                    
+                    # Polling loop for dd progress monitoring
+                    speed_calc = MovingAverageSpeed(window_seconds=5.0)
+                    speed_calc.add_sample(0, time.time())
+                    
+                    while process.poll() is None:
+                        ls_result = ADBClient.instance().run_silent(
+                            ['shell', 'su', '-c', f'ls -l {target_path}'],
+                            use_serial=True,
+                            timeout=5.0
+                        )
+                        
+                        if ls_result:
+                            parts = ls_result.strip().split()
+                            if len(parts) >= 5 and parts[4].isdigit():
+                                try:
+                                    current_size = int(parts[4])
+                                    speed_calc.add_sample(current_size, time.time())
+                                    speed_mb = speed_calc.get_speed_mb_s()
+                                    
+                                    progress_pct = (current_size / total_bytes * 100) if total_bytes > 0 else 0
+                                    progress_pct = min(100.0, max(0.0, progress_pct))
+                                    
+                                    size_mb = current_size / (1024 * 1024)
+                                    tot_mb = total_bytes / (1024 * 1024)
+                                    status_str = f"({current_num}/{total_partitions}) Creating image: {partition_name} ({size_mb:.1f}/{tot_mb:.1f} MB, {progress_pct:.1f}%) @ {speed_mb:.1f} MB/s"
+                                    
+                                    self.progress.emit(status_str)
+                                    self.progress_detail.emit(int(progress_pct), status_str)
+                                except (ValueError, IndexError):
+                                    pass
+                        
+                        time.sleep(0.25)
+                    
+                    if process.returncode != 0:
+                        err = process.stderr.read() if process.stderr else ""
+                        self.log_message.emit(f"Failed to copy {partition_name}: {err.strip()}")
+                        continue
+                    
+                    # If total_bytes was unknown, query actual generated size
+                    if total_bytes <= 0:
+                        ls_check = ADBClient.instance().run_silent(
+                            ['shell', 'su', '-c', f'ls -l {target_path}'],
+                            use_serial=True,
+                            timeout=5.0
+                        )
+                        if ls_check:
+                            parts = ls_check.strip().split()
+                            if len(parts) >= 5 and parts[4].isdigit():
+                                total_bytes = int(parts[4])
+
+                # Step 2: Pull the image from device to PC using lz4 compression
+                pull_msg = f"({current_num}/{total_partitions}) Pulling {partition_name} to PC (lz4)..."
+                self.progress.emit(pull_msg)
+                self.progress_detail.emit(0, pull_msg)
+                self.log_message.emit(f"Pulling {partition_name} from device (compression: lz4) to {self.save_dir}...")
+                
+                local_dest_file = os.path.join(self.save_dir, f"{partition_name}.img")
+                if os.path.exists(local_dest_file):
+                    try:
+                        os.remove(local_dest_file)
+                    except Exception:
+                        pass
+
+                pull_process = ADBClient.instance().popen(
+                    ['pull', '-z', 'lz4', target_path, self.save_dir],
+                    tool="adb",
+                    use_serial=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
                 )
                 
-                # Polling loop for progress monitoring
-                last_size = 0
-                start_time = time.time()
-                while process.poll() is None:
-                    # Run ls -l to get the current file size
-                    ls_command = [
-                        adb_exe, *serial,
-                        'shell', 'su', '-c', f'ls -l {target_path}'
-                    ]
-                    ls_result = subprocess.run(ls_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)
+                speed_calc = MovingAverageSpeed(window_seconds=5.0)
+                speed_calc.add_sample(0, time.time())
+                
+                while pull_process.poll() is None:
+                    if os.path.exists(local_dest_file):
+                        try:
+                            pc_size = os.path.getsize(local_dest_file)
+                            speed_calc.add_sample(pc_size, time.time())
+                            speed_mb = speed_calc.get_speed_mb_s()
+                            
+                            progress_pct = (pc_size / total_bytes * 100) if total_bytes > 0 else 0
+                            progress_pct = min(100.0, max(0.0, progress_pct))
+                            
+                            size_mb = pc_size / (1024 * 1024)
+                            tot_mb = total_bytes / (1024 * 1024)
+                            status_str = f"({current_num}/{total_partitions}) Pulling {partition_name}: {size_mb:.1f}/{tot_mb:.1f} MB ({progress_pct:.1f}%) @ {speed_mb:.1f} MB/s"
+                            
+                            self.progress.emit(status_str)
+                            self.progress_detail.emit(int(progress_pct), status_str)
+                        except OSError:
+                            pass
+                    time.sleep(0.25)
+                
+                ret = pull_process.wait()
+                if ret != 0:
+                    err = pull_process.stderr.read() if pull_process.stderr else ""
+                    # Fallback to standard uncompressed pull if -z lz4 was rejected
+                    if "unknown option" in err.lower() or "invalid" in err.lower():
+                        self.log_message.emit(f"LZ4 compression not supported by ADB daemon, falling back to standard pull...")
+                        pull_process = ADBClient.instance().popen(
+                            ['pull', target_path, self.save_dir],
+                            tool="adb",
+                            use_serial=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True
+                        )
+                        speed_calc.reset()
+                        speed_calc.add_sample(0, time.time())
+                        while pull_process.poll() is None:
+                            if os.path.exists(local_dest_file):
+                                try:
+                                    pc_size = os.path.getsize(local_dest_file)
+                                    speed_calc.add_sample(pc_size, time.time())
+                                    speed_mb = speed_calc.get_speed_mb_s()
+                                    progress_pct = (pc_size / total_bytes * 100) if total_bytes > 0 else 0
+                                    progress_pct = min(100.0, max(0.0, progress_pct))
+                                    size_mb = pc_size / (1024 * 1024)
+                                    tot_mb = total_bytes / (1024 * 1024)
+                                    status_str = f"({current_num}/{total_partitions}) Pulling {partition_name}: {size_mb:.1f}/{tot_mb:.1f} MB ({progress_pct:.1f}%) @ {speed_mb:.1f} MB/s"
+                                    self.progress.emit(status_str)
+                                    self.progress_detail.emit(int(progress_pct), status_str)
+                                except OSError:
+                                    pass
+                            time.sleep(0.25)
+                        ret = pull_process.wait()
                     
-                    if ls_result.returncode == 0:
-                        # Parse ls -l output: -rw-rw---- 1 root sdcard_rw 67108864 2026-03-04 19:58 boot.img
-                        parts = ls_result.stdout.strip().split()
-                        if len(parts) >= 5:
-                            try:
-                                # Standard ls -l format usually has size at index 3 or 4
-                                # On many Androids it's: permissions links user group size date time name
-                                # In the example from my local test device: -rw-rw---- 1 u0_a155 media_rw 67108864 2026-02-28 20:38 boot.img
-                                # The size is '67108864' at index 4
-                                current_size = int(parts[4])
-                                
-                                # Calculate progress
-                                progress_pct = (current_size / total_bytes * 100) if total_bytes > 0 else 0
-                                
-                                # Calculate speed
-                                elapsed = time.time() - start_time
-                                speed_mb = (current_size / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-                                
-                                size_mb = current_size / (1024 * 1024)
-                                self.progress.emit(f"({current_num}/{total_partitions}) {partition_name}: {size_mb:.1f}MB ({progress_pct:.1f}%) @ {speed_mb:.1f} MB/s")
-                                last_size = current_size
-                            except (ValueError, IndexError):
-                                pass
-                    
-                    time.sleep(1) # Poll every second
+                    if ret != 0:
+                        err = pull_process.stderr.read() if pull_process.stderr else ""
+                        self.log_message.emit(f"Failed to pull {partition_name}: {err.strip()}")
+                        ADBClient.instance().run_shell(['su', '-c', f'rm -f {target_path}'], use_serial=True)
+                        continue
                 
-                if process.returncode != 0:
-                    err = process.stderr.read()
-                    self.log_message.emit(f"Failed to copy {partition_name}: {err.strip()}")
-                    continue
-                
-                # Step 2: Pull the image from the device
-                self.progress.emit(f"({current_num}/{total_partitions}) Pulling {partition_name} to PC...")
-                self.log_message.emit(f"Pulling {partition_name} from device (may take a while)...")
-                
-                pull_command = [
-                    adb_exe, *serial,
-                    'pull', target_path, self.save_dir
-                ]
-                result = subprocess.run(pull_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)
-                
-                if result.returncode != 0:
-                    self.log_message.emit(f"Failed to pull {partition_name}: {result.stderr.strip()}")
-                    # Cleanup attempt
-                    subprocess.run([adb_exe, *serial, 'shell', 'su', '-c', f'rm {target_path}'], creationflags=creationflags)
-                    continue
-                
+                self.progress_detail.emit(100, f"({current_num}/{total_partitions}) Completed pull for {partition_name}")
+
                 # Step 3: Remove the image from the device
-                self.log_message.emit(f"Cleaning up {partition_name} from device...")
-                rm_command = [
-                    adb_exe, *serial,
-                    'shell', 'su', '-c', f'rm {target_path}'
-                ]
-                subprocess.run(rm_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)
+                self.log_message.emit(f"Cleaning up {partition_name} from /data/local/tmp/...")
+                ADBClient.instance().run_shell(['su', '-c', f'rm -f {target_path}'], use_serial=True)
                 
                 successful_pulls += 1
                 self.log_message.emit(f"Pulled {partition_name} successfully")
@@ -289,7 +394,7 @@ class PartitionFlashWorker(QThread):
     
     def __init__(self, platform_tools_path, partition_info, image_path):
         super().__init__()
-        self.platform_tools_path = platform_tools_path
+        self.platform_tools_path = platform_tools_path or ToolPaths.instance().platform_tools_dir
         self.partition_info = partition_info
         self.image_path = image_path
     
@@ -297,43 +402,41 @@ class PartitionFlashWorker(QThread):
         try:
             partition_name = self.partition_info['name']
             partition_success = True
-            adb_exe = ToolPaths.instance().adb
-
-            serial = DeviceManager.instance().serial_args()
+            target_path = f"/data/local/tmp/{partition_name}.img"
             
-            # Step 1: Push the image file to /sdcard
+            # Step 1: Push the image file to /data/local/tmp
             self.progress.emit(f"Pushing image file to device...")
-            self.log_message.emit(f"Pushing image for {partition_name} to device...")
-            push_command = [
-                adb_exe, *serial,
-                'push', self.image_path, f'/sdcard/{partition_name}.img'
-            ]
-            # Windows specific: Create a new process group and hide the console window.
-            creationflags = 0
-            if sys.platform == "win32":
-                creationflags = (
-                    subprocess.CREATE_NEW_PROCESS_GROUP |
-                    subprocess.CREATE_NO_WINDOW
+            self.log_message.emit(f"Pushing image for {partition_name} to /data/local/tmp/...")
+            
+            push_result = ADBClient.instance().push(
+                self.image_path,
+                target_path,
+                compression="lz4",
+                use_serial=True
+            )
+            if push_result.returncode != 0:
+                # Fallback without compression
+                push_result = ADBClient.instance().push(
+                    self.image_path,
+                    target_path,
+                    use_serial=True
                 )
-
-            result = subprocess.run(push_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)
-            if result.returncode != 0:
-                self.log_message.emit(f"Failed to push image to device: {result.stderr.strip()}")
-                self.progress.emit(f"Failed to push image to device")
-                self.finished_with_status.emit(False)
-                return
+                if push_result.returncode != 0:
+                    self.log_message.emit(f"Failed to push image to device: {push_result.stderr.strip()}")
+                    self.progress.emit(f"Failed to push image to device")
+                    self.finished_with_status.emit(False)
+                    return
             
             # Step 2: Flash the image to the partition
             self.progress.emit(f"Flashing {partition_name}...")
             self.log_message.emit(f"Flashing {partition_name}...")
-            dd_command = [
-                adb_exe, *serial,
-                'shell', 'su', '-c',
-                f'dd if=/sdcard/{partition_name}.img of=/dev/block/by-name/{partition_name} bs=4M'
-            ]
-            result = subprocess.run(dd_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)
-            if result.returncode != 0:
-                self.log_message.emit(f"Failed to flash {partition_name}: {result.stderr.strip()}")
+            dd_result = ADBClient.instance().run(
+                ['shell', 'su', '-c', f'dd if={target_path} of=/dev/block/by-name/{partition_name} bs=4M'],
+                tool="adb",
+                use_serial=True
+            )
+            if dd_result.returncode != 0:
+                self.log_message.emit(f"Failed to flash {partition_name}: {dd_result.stderr.strip()}")
                 self.progress.emit(f"Failed to flash {partition_name}")
                 partition_success = False
             else:
@@ -343,13 +446,13 @@ class PartitionFlashWorker(QThread):
             # Step 3: Clean up the image from the device
             self.progress.emit(f"Cleaning up...")
             self.log_message.emit(f"Cleaning up temporary files...")
-            rm_command = [
-                adb_exe, *serial,
-                'shell', 'su', '-c', f'rm /sdcard/{partition_name}.img'
-            ]
-            result = subprocess.run(rm_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=creationflags)
-            if result.returncode != 0:
-                self.log_message.emit(f"Failed to remove temporary file: {result.stderr.strip()}")
+            rm_result = ADBClient.instance().run(
+                ['shell', 'su', '-c', f'rm -f {target_path}'],
+                tool="adb",
+                use_serial=True
+            )
+            if rm_result.returncode != 0:
+                self.log_message.emit(f"Failed to remove temporary file: {rm_result.stderr.strip()}")
                 self.progress.emit(f"Failed to clean up temporary file")
                 # Not counting cleanup failures as a complete failure
             
@@ -460,7 +563,7 @@ class PartitionManager(QMainWindow):
         self.log_window.setReadOnly(True)
         self.log_window.setMaximumHeight(150)
         
-        self.log_label = QLabel("Operation Log:")
+        self.log_label = QLabel("Operation Log")
         log_font = QFont()
         log_font.setBold(True)
         self.log_label.setFont(log_font)
@@ -502,13 +605,10 @@ class PartitionManager(QMainWindow):
     
 
     def update_progress(self, message):
-        """Update status bar and log label with pull progress."""
         self.statusBar().showMessage(message)
-        if hasattr(self, 'log_label'):
-            self.log_label.setText(f"Operation Log: {message}")
+
     
     def set_ui_enabled(self, state: bool):
-        """Helper to toggle main UI elements during long operations."""
         self.refresh_button.setEnabled(state)
         self.tree_view.setEnabled(state)
         self.toggle_partition_selection_button.setEnabled(state)
@@ -745,11 +845,7 @@ class PartitionManager(QMainWindow):
             self.statusBar().showMessage(f"Flash operation failed for {partition_name}")
             QMessageBox.critical(self, "Flash Failed", 
                               f"Failed to flash {partition_name} partition. Check logs for details.")
-        
-        # Reset log label
-        self.log_label.setText("Operation Log:")
             
-                    
     
     def log_message(self, message):
         current_time = datetime.datetime.now().strftime("%H:%M:%S")
@@ -763,9 +859,6 @@ class PartitionManager(QMainWindow):
     
     def pull_finished(self, success, success_count, total_count):
         """Handle the completion of the pull operation."""
-        if hasattr(self, 'progress_dialog') and self.progress_dialog is not None:
-            self.progress_dialog.close()
-        
         # Re-enable UI elements
         self.set_ui_enabled(True)
         
@@ -786,9 +879,6 @@ class PartitionManager(QMainWindow):
             QMessageBox.critical(self, "Operation Failed", 
                                "Failed to pull any partitions. Check logs for details.")
                                
-        # Reset log label
-        self.log_label.setText("Operation Log:")
-
 
 
 
