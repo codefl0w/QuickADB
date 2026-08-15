@@ -67,8 +67,8 @@ class QuickADBApp(QMainWindow):
     # Main window
 
     # Constants
-    APP_VERSION = "V5.3.1"
-    APP_SUFFIX = "Full" # Could be beta or personal builds
+    APP_VERSION = "V5.3.2"
+    APP_SUFFIX = "Hotfix" # Could be beta or personal builds
     BUTTON_WIDTH = 150
     BUTTON_HEIGHT = 40
     GITHUB_URL = "https://github.com/codefl0w/QuickADB"

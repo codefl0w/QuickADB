@@ -3,6 +3,13 @@ The changelog only includes what's new. To read feature descriptions, see [Featu
 
 For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md).
 
+# [5.3.2] - 16.08.2026
+
+### Fixed
+
+- Updater: Fix wrong architecture selection
+ *This update must be installed manually since the updater is currently broken. Sorry for the inconvenience.*
+
 # [5.3.1] - 14.08.2026
 
 ### Added

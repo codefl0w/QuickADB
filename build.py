@@ -41,7 +41,7 @@ APPIMAGE_TOOL_URLS = {
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 UTIL_DIR = os.path.join(ROOT_DIR, "util")
 DIST_DIR = os.path.join(ROOT_DIR, "dist")
-APP_VERSION = "V5.3.1" # I should probably make this value global
+APP_VERSION = "V5.3.2" # I should probably make this value global
 
 def get_arch():
     # Detect machine architecture and normalize to x86_64 or arm64

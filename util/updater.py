@@ -58,6 +58,31 @@ def _format_size(num_bytes: int) -> str:
     return f"{int(num_bytes)} B"
 
 
+def _detect_arch() -> str:
+    # Detect current system/binary architecture ('arm64' or 'x86_64')
+    if getattr(sys, "frozen", False) and sys.executable:
+        exe_lower = os.path.basename(sys.executable).lower()
+        if "arm64" in exe_lower or "aarch64" in exe_lower:
+            return "arm64"
+        if "x86_64" in exe_lower or "amd64" in exe_lower or "x64" in exe_lower:
+            return "x86_64"
+
+    machine = platform.machine().lower()
+    if machine in ("arm64", "aarch64", "armv8l"):
+        return "arm64"
+    if machine in ("amd64", "x86_64", "x64", "em64t"):
+        return "x86_64"
+
+    if os.name == "nt":
+        arch_env = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE") or "").lower()
+        if "arm64" in arch_env:
+            return "arm64"
+        if "amd64" in arch_env or "x86_64" in arch_env:
+            return "x86_64"
+
+    return "x86_64"
+
+
 def _normalize_version(version_text: str) -> tuple[int, ...]:
     cleaned = (version_text or "").strip().lstrip("vV")
     if not cleaned:
@@ -503,31 +528,60 @@ class UpdateManager(QObject):
         if not release.assets:
             return None, "No downloadable assets were attached to the latest GitHub release."
 
-        current_target = self._current_target_path()
-        current_name = os.path.basename(current_target).lower() if current_target else ""
-        if current_name:
-            for asset in release.assets:
-                if asset.name.lower() == current_name:
-                    return asset, ""
-
         system_name = platform.system()
-        candidates: list[ReleaseAsset] = []
+        target_arch = _detect_arch()
+
+        matching_assets: list[ReleaseAsset] = []
         for asset in release.assets:
             name = asset.name.lower()
-            if system_name == "Windows" and name.endswith(".exe"):
-                candidates.append(asset)
-            elif system_name == "Linux" and name.endswith(".appimage"):
-                candidates.append(asset)
-            elif system_name == "Darwin" and not name.endswith(".exe") and not name.endswith(".appimage"):
-                if "mac" in name or "darwin" in name or "." not in asset.name:
-                    candidates.append(asset)
 
-        if len(candidates) == 1:
-            return candidates[0], ""
-        if len(candidates) > 1:
-            return candidates[0], ""
+            # OS check
+            if system_name == "Windows":
+                if not name.endswith(".exe"):
+                    continue
+                if "linux" in name or "darwin" in name or "macos" in name:
+                    continue
+            elif system_name == "Linux":
+                if not name.endswith(".appimage"):
+                    continue
+                if "windows" in name or "darwin" in name or "macos" in name:
+                    continue
+            elif system_name == "Darwin":
+                if name.endswith(".exe") or name.endswith(".appimage"):
+                    continue
+                if not ("darwin" in name or "macos" in name or "mac" in name or "." not in asset.name):
+                    continue
+                if "windows" in name or "linux" in name:
+                    continue
+            else:
+                continue
 
-        return None, f"No matching release asset was found for {system_name}."
+            # Architecture check
+            is_arm = any(k in name for k in ("arm64", "aarch64", "armv8"))
+            is_x86 = any(k in name for k in ("x86_64", "amd64", "x64", "x86"))
+
+            if target_arch == "arm64":
+                if is_x86 and not is_arm:
+                    continue
+                matching_assets.append(asset)
+            elif target_arch == "x86_64":
+                if is_arm:
+                    continue
+                matching_assets.append(asset)
+
+        if not matching_assets:
+            return None, f"No matching release asset was found for {system_name} ({target_arch})."
+
+        # If multiple candidates, prefer exact arch match in name
+        if len(matching_assets) > 1:
+            for asset in matching_assets:
+                name = asset.name.lower()
+                if target_arch == "arm64" and ("arm64" in name or "aarch64" in name):
+                    return asset, ""
+                if target_arch == "x86_64" and ("x86_64" in name or "amd64" in name or "x64" in name):
+                    return asset, ""
+
+        return matching_assets[0], ""
 
     def _download_root(self) -> str:
         return os.path.join(tempfile.gettempdir(), "quickadb-updater")
