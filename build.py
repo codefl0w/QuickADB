@@ -264,7 +264,7 @@ def main():
     # 4. Run PyInstaller
     print("Starting PyInstaller build...")
     spec_path = os.path.join(ROOT_DIR, "QuickADB.spec")
-    build_cmd = ["pyinstaller", "--noconfirm", spec_path]
+    build_cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", spec_path]
 
     try:
         subprocess.run(build_cmd, check=True, cwd=ROOT_DIR)
