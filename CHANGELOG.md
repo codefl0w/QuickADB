@@ -3,10 +3,11 @@ The changelog only includes what's new. To read feature descriptions, see [Featu
 
 For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md).
 
-# [5.3.3] - 31.10.2026
+# [5.3.4] - 31.10.2026
 
 ### Fixed
 
+- Updater: Prefer release assets matching the target release version tag
 - Super Dumper: Fix extraction spawning a second GUI window on packaged builds
 - Payload Dumper: Fix path resolution in packaged builds and prevent stdout/stderr pipe deadlocks
 - Boot Animation Creator: Fix exported ZIPs saving low-resolution preview thumbnails instead of full-res frames

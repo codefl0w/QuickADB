@@ -572,6 +572,16 @@ class UpdateManager(QObject):
         if not matching_assets:
             return None, f"No matching release asset was found for {system_name} ({target_arch})."
 
+        # Prefer assets matching the release version tag (e.g. V5.3.4)
+        ver_clean = (release.version or "").strip().lstrip("vV").lower()
+        if ver_clean:
+            version_matched = [
+                a for a in matching_assets
+                if f"v{ver_clean}" in a.name.lower() or ver_clean in a.name.lower()
+            ]
+            if version_matched:
+                matching_assets = version_matched
+
         # If multiple candidates, prefer exact arch match in name
         if len(matching_assets) > 1:
             for asset in matching_assets:
