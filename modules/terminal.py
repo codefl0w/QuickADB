@@ -326,7 +326,7 @@ class TerminalWindow(QMainWindow):
                     command.split() if isinstance(command, str) else command,
                     capture_output=True,
                     text=True,
-                    encoding="utf-8" if not self.is_windows else "latin-1",
+                    encoding="utf-8",
                     errors="replace",
                     timeout=5,
                     creationflags=creationflags
@@ -456,7 +456,7 @@ class TerminalWindow(QMainWindow):
 
             if self.system == "Windows":
                 launch_cmd = ["cmd.exe", "/K"]
-                encoding = "latin-1"
+                encoding = "utf-8"
             elif self.system == "Linux":
                 shell = shutil.which("bash") or shutil.which("sh")
                 if not shell:
@@ -494,7 +494,10 @@ class TerminalWindow(QMainWindow):
                 return
 
             env = os.environ.copy()
-            if not self.is_windows:
+            if self.is_windows:
+                current_path = env.get('PATH', '')
+                env['PATH'] = f"{self.platform_tools_path}{os.pathsep}{current_path}"
+            else:
                 env['PS1'] = '$ '
                 env['TERM'] = 'xterm-256color'
                 env['PYTHONUNBUFFERED'] = '1'
@@ -522,7 +525,8 @@ class TerminalWindow(QMainWindow):
                 text=False,
                 shell=False,
                 bufsize=0,
-                env=env if not self.is_windows else None,
+                errors='replace',
+                env=env,
                 preexec_fn=os.setsid if not self.is_windows else None,
                 creationflags=creationflags,
                 startupinfo=startupinfo
@@ -579,7 +583,7 @@ class TerminalWindow(QMainWindow):
                 
                 try:
                     command_bytes = (command + self.line_ending).encode(
-                        'latin-1' if self.is_windows else 'utf-8', 
+                        'utf-8', 
                         errors='replace'
                     )
                     self.process.stdin.buffer.write(command_bytes)
@@ -839,3 +843,6 @@ def show_terminal_window(app_version="Unknown", app_suffix="",
 
 if __name__ == "__main__":
     show_terminal_window()
+
+
+TerminalWidget = TerminalWindow

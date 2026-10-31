@@ -15,30 +15,60 @@ import tempfile
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QIcon
 
+def _get_config_file() -> str:
+    base = os.environ.get("APPDATA") or os.path.expanduser("~/.config")
+    target_dir = os.path.join(base, "QuickADB")
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        return os.path.join(target_dir, "quickadb_theme_name")
+    except OSError:
+        return os.path.join(tempfile.gettempdir(), "quickadb_theme_name")
+
+
+def resolve_theme_path(name: str) -> str:
+    from util.resource import resource_path
+    name = os.path.basename(name)
+    if not name or name in (".", ".."):
+        name = "dark.qss"
+    return resource_path(os.path.join("themes", name))
+
+
 class ThemeManager:
-    CONFIG_FILE = os.path.join(tempfile.gettempdir(), "quickadb_theme_name")
+    CONFIG_FILE = _get_config_file()
     TEXT_COLOR_PRIMARY = "#ffffff"
     TEXT_COLOR_SECONDARY = "#8b949e"
 
     @classmethod
     def get_config_path(cls):
-        return cls.CONFIG_FILE
+        return getattr(cls, "CONFIG_FILE", None) or _get_config_file()
 
     @classmethod
     def ensure_default(cls):
-        if not os.path.exists(cls.CONFIG_FILE):
-            with open(cls.CONFIG_FILE, "w") as f:
-                f.write("dark.qss")
+        config_path = cls.get_config_path()
+        if not os.path.exists(config_path):
+            try:
+                with open(config_path, "w") as f:
+                    f.write("dark.qss")
+            except OSError:
+                pass
 
     @classmethod
     def read_theme_name(cls):
-        with open(cls.CONFIG_FILE, "r") as f:
-            return f.read().strip()
+        cls.ensure_default()
+        try:
+            with open(cls.get_config_path(), "r") as f:
+                content = f.read().strip()
+                return content if content else "dark.qss"
+        except OSError:
+            return "dark.qss"
 
     @classmethod
     def write_theme_name(cls, name):
-        with open(cls.CONFIG_FILE, "w") as f:
-            f.write(name)
+        try:
+            with open(cls.get_config_path(), "w") as f:
+                f.write(name)
+        except OSError:
+            pass
 
     @classmethod
     def _set_text_colors_for_theme(cls, theme_name: str):
@@ -114,6 +144,10 @@ class ThemeManager:
         cls.write_theme_name("none")
 
     @classmethod
+    def resolve_theme_path(cls, name: str) -> str:
+        return resolve_theme_path(name)
+
+    @classmethod
     def apply_theme(cls, widget: QWidget):
         cls.ensure_default()
         name = cls.read_theme_name()
@@ -129,9 +163,10 @@ class ThemeManager:
             return
         cls._set_text_colors_for_theme(name)
 
-        path = resource_path(os.path.join("themes", name))
-        if not os.path.exists(path):
+        name = os.path.basename(name)
+        path = resolve_theme_path(name)
+        if not os.path.exists(path) or not os.path.isfile(path):
             name = "dark.qss"
-            path = resource_path(os.path.join("themes", "dark.qss"))
+            path = resolve_theme_path("dark.qss")
             cls._set_text_colors_for_theme(name)
         cls.load_qss(widget, path)

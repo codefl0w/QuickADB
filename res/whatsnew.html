@@ -10,12 +10,31 @@ For the old changelog, see
 <a href="https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md">README_OLD</a>.
 </p>
 
-<h1 id="-5-3-2-16-08-2026">[5.3.2] - 16.08.2026</h1>
+<h1 id="-5-3-3-31-10-2026">[5.3.3] - 31.10.2026</h1>
 <h3 id="fixed">Fixed</h3>
 <ul>
-<li>Updater: Fix wrong architecture selection
-<em>This update must be installed manually since the updater is currently broken. Sorry for the inconvenience.</em></li>
+<li>Super Dumper: Fix extraction spawning a second GUI window on packaged builds</li>
+<li>Payload Dumper: Fix path resolution in packaged builds and prevent stdout/stderr pipe deadlocks</li>
+<li>Boot Animation Creator: Fix exported ZIPs saving low-resolution preview thumbnails instead of full-res frames</li>
+<li>Boot Animation Creator: Fix custom part folder names in <code>desc.txt</code> being ignored during preview</li>
+<li>Partition Manager: Fix checkbox double-toggle bug and wrong row selection when table is sorted</li>
+<li>Partition Manager: Fix progress dialog staying stuck at 0% during partition flash and pull</li>
+<li>App Manager: Prevent corrupt backup ZIPs when split APK pulls fail or share filenames</li>
+<li>File Explorer: Fix text editor failing to save files larger than 90KB and guard against opening huge files in RAM</li>
+<li>Wireless ADB: Stop background mDNS listener and worker thread properly when dialog is closed</li>
+<li>Terminal: Fix UTF-8 output corruption and missing <code>platform-tools</code> in <code>PATH</code> on Windows</li>
 </ul>
-
+<h3 id="improved">Improved</h3>
+<ul>
+<li>Super Dumper: Update bundled <code>unsuper</code> to V2.3.0 with in-process unpacking and deduplicated metadata parser</li>
+<li>App Manager: Run batch app actions, backups, and permission changes sequentially in a single worker thread</li>
+<li>File Explorer: Stage root pulls through <code>/data/local/tmp</code> instead of running <code>chmod -R 777</code> on device directories</li>
+<li>File Explorer: Replace unsafe <code>thread.terminate()</code> on window close with graceful subprocess cleanup</li>
+<li>Device Manager: Compare USB device descriptors instead of device count and stop polling when no libusb backend is present</li>
+<li>Theme Manager: Move theme config from temp directory to user config directory</li>
+<li>QuickADB: Execute ADB and Fastboot commands as argument lists without host shell interpolation</li>
+<li>Security: Add path traversal checks for archive extractions and <code>shlex.quote</code> for remote shell paths</li>
+<li>Overall code cleanup and dead code removal</li>
+</ul>
 
 

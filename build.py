@@ -41,7 +41,15 @@ APPIMAGE_TOOL_URLS = {
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 UTIL_DIR = os.path.join(ROOT_DIR, "util")
 DIST_DIR = os.path.join(ROOT_DIR, "dist")
-APP_VERSION = "V5.3.2" # I should probably make this value global
+try:
+    from util.resource import APP_VERSION
+except ImportError:
+    if ROOT_DIR not in sys.path:
+        sys.path.insert(0, ROOT_DIR)
+    try:
+        from util.resource import APP_VERSION
+    except ImportError:
+        APP_VERSION = "V5.3.2"
 
 def get_arch():
     # Detect machine architecture and normalize to x86_64 or arm64
@@ -58,26 +66,71 @@ def download_file(url, dest):
         print(f"Failed to download {url}: {e}")
 
 
+def extract_archive(archive_path, dest_dir):
+    """
+    Safely extracts a zip or tar archive into dest_dir, validating each member's
+    target path using os.path.realpath to prevent directory traversal outside dest_dir.
+    """
+    if not os.path.exists(archive_path):
+        raise FileNotFoundError(f"Archive not found: {archive_path}")
+
+    print(f"Extracting {archive_path} to {dest_dir}...")
+    os.makedirs(dest_dir, exist_ok=True)
+    dest_real = os.path.realpath(dest_dir)
+
+    if zipfile.is_zipfile(archive_path):
+        with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+            for member in zip_ref.namelist():
+                target_path = os.path.realpath(os.path.join(dest_dir, member))
+                try:
+                    is_safe = (os.path.commonpath([os.path.normcase(dest_real), os.path.normcase(target_path)]) == os.path.normcase(dest_real))
+                except ValueError:
+                    is_safe = False
+                if not is_safe:
+                    raise ValueError(f"Path traversal detected in zip archive member: {member}")
+            zip_ref.extractall(dest_dir)
+    else:
+        # tarfile handles both .tar and compressed .tar (.tar.gz, etc.) via 'r:*'
+        tar_path = archive_path
+        cleanup_tar = False
+        if archive_path.endswith(".tar.gz"):
+            tar_path = archive_path.replace(".tar.gz", ".tar")
+            with gzip.open(archive_path, 'rb') as f_in:
+                with open(tar_path, 'wb') as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+            cleanup_tar = True
+
+        try:
+            with tarfile.open(tar_path, 'r:*') as tar_ref:
+                for member in tar_ref.getmembers():
+                    target_path = os.path.realpath(os.path.join(dest_dir, member.name))
+                    try:
+                        is_safe = (os.path.commonpath([os.path.normcase(dest_real), os.path.normcase(target_path)]) == os.path.normcase(dest_real))
+                    except ValueError:
+                        is_safe = False
+                    if not is_safe:
+                        raise ValueError(f"Path traversal detected in tar archive member: {member.name}")
+                    if member.issym() or member.islnk():
+                        link_target = os.path.realpath(os.path.join(dest_dir, os.path.dirname(member.name), member.linkname))
+                        try:
+                            is_link_safe = (os.path.commonpath([os.path.normcase(dest_real), os.path.normcase(link_target)]) == os.path.normcase(dest_real))
+                        except ValueError:
+                            is_link_safe = False
+                        if not is_link_safe:
+                            raise ValueError(f"Path traversal detected in tar archive member link: {member.name} -> {member.linkname}")
+                if hasattr(tarfile, 'data_filter'):
+                    tar_ref.extractall(dest_dir, filter='data')
+                else:
+                    tar_ref.extractall(dest_dir)
+        finally:
+            if cleanup_tar and os.path.exists(tar_path):
+                os.remove(tar_path)
+
 def extract_zip(src, dest_dir):
-    print(f"Extracting {src} to {dest_dir}...")
-    with zipfile.ZipFile(src, 'r') as zip_ref:
-        zip_ref.extractall(dest_dir)
+    extract_archive(src, dest_dir)
 
 def extract_targz_payload_dumper(src, dest_dir):
-    print(f"Extracting {src} to {dest_dir}...")
-    # First unpack .gz to a temporary .tar file
-    tar_path = src.replace(".tar.gz", ".tar")
-    with gzip.open(src, 'rb') as f_in:
-        with open(tar_path, 'wb') as f_out:
-            shutil.copyfileobj(f_in, f_out)
-
-    # Then extract .tar
-    with tarfile.open(tar_path, 'r') as tar_ref:
-        tar_ref.extractall(dest_dir)
-
-    # Cleanup temp .tar
-    if os.path.exists(tar_path):
-        os.remove(tar_path)
+    extract_archive(src, dest_dir)
 
 def create_linux_appimage(arch):
     print(f"Creating Linux AppImage for {arch}...")

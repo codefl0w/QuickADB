@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from typing import Mapping, Optional, Sequence
 
 from util.devicemanager import DeviceManager
-from util.resource import get_clean_env
 from util.toolpaths import ToolPaths
 from util.adbclient import ADBClient
 
@@ -176,6 +175,12 @@ def prepare_package_source(package_path: str) -> PreparedAPKPackage:
     extract_dir = tempfile.mkdtemp(prefix="quickadb_apkapi_")
     try:
         with zipfile.ZipFile(package_path, "r") as archive:
+            resolved_dir = os.path.realpath(extract_dir)
+            base_prefix = resolved_dir if resolved_dir.endswith(os.sep) else resolved_dir + os.sep
+            for member in archive.infolist():
+                target_path = os.path.realpath(os.path.join(resolved_dir, member.filename))
+                if not (target_path == resolved_dir or target_path.startswith(base_prefix)):
+                    raise ValueError(f"Path traversal detected in archive member: {member.filename}")
             archive.extractall(extract_dir)
 
         apk_paths = [
@@ -391,14 +396,3 @@ def _serial_args(serial: Optional[str]) -> list[str]:
         return ["-s", serial]
     return []
 
-
-def _subprocess_kwargs() -> dict:
-    kwargs = {
-        "capture_output": True,
-        "text": True,
-        "check": False,
-        "env": get_clean_env(),
-    }
-    if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-    return kwargs

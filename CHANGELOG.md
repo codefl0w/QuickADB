@@ -3,6 +3,33 @@ The changelog only includes what's new. To read feature descriptions, see [Featu
 
 For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md).
 
+# [5.3.3] - 31.10.2026
+
+### Fixed
+
+- Super Dumper: Fix extraction spawning a second GUI window on packaged builds
+- Payload Dumper: Fix path resolution in packaged builds and prevent stdout/stderr pipe deadlocks
+- Boot Animation Creator: Fix exported ZIPs saving low-resolution preview thumbnails instead of full-res frames
+- Boot Animation Creator: Fix custom part folder names in ```desc.txt``` being ignored during preview
+- Partition Manager: Fix checkbox double-toggle bug and wrong row selection when table is sorted
+- Partition Manager: Fix progress dialog staying stuck at 0% during partition flash and pull
+- App Manager: Prevent corrupt backup ZIPs when split APK pulls fail or share filenames
+- File Explorer: Fix text editor failing to save files larger than 90KB and guard against opening huge files in RAM
+- Wireless ADB: Stop background mDNS listener and worker thread properly when dialog is closed
+- Terminal: Fix UTF-8 output corruption and missing ```platform-tools``` in ```PATH``` on Windows
+
+### Improved
+
+- Super Dumper: Update bundled ```unsuper``` to V2.3.0 with in-process unpacking and deduplicated metadata parser
+- App Manager: Run batch app actions, backups, and permission changes sequentially in a single worker thread
+- File Explorer: Stage root pulls through ```/data/local/tmp``` instead of running ```chmod -R 777``` on device directories
+- File Explorer: Replace unsafe ```thread.terminate()``` on window close with graceful subprocess cleanup
+- Device Manager: Compare USB device descriptors instead of device count and stop polling when no libusb backend is present
+- Theme Manager: Move theme config from temp directory to user config directory
+- QuickADB: Execute ADB and Fastboot commands as argument lists without host shell interpolation
+- Security: Add path traversal checks for archive extractions and ```shlex.quote``` for remote shell paths
+- Overall code cleanup and dead code removal
+
 # [5.3.2] - 16.08.2026
 
 ### Fixed

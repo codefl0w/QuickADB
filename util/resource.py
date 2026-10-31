@@ -8,6 +8,8 @@ import sys
 import os
 import webbrowser
 
+APP_VERSION = "V5.3.2"
+
 def get_root_dir() -> str:
     """
     Returns the root directory of the application.

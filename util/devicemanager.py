@@ -24,7 +24,7 @@ from util.adbclient import ADBClient
 try:
     import usb.core
 except ImportError:
-    pass
+    usb = None
 
 class USBMonitorWorker(QThread):
     """Background thread to monitor USB plug/unplug events and trigger device list refresh."""
@@ -33,20 +33,36 @@ class USBMonitorWorker(QThread):
     def __init__(self):
         super().__init__()
         self._running = True
-        self._last_count = -1
+        self._last_set = None
 
     def run(self):
-        if 'usb' not in sys.modules or not hasattr(sys.modules['usb'], 'core'):
+        global usb
+        if usb is None:
+            try:
+                import usb.core
+            except (ImportError, Exception):
+                return
+        if not hasattr(usb, 'core'):
             return
 
         while self._running:
             try:
-                # Count USB devices
-                devs = list(usb.core.find(find_all=True))
-                count = len(devs)
-                if self._last_count != -1 and count != self._last_count:
+                # Poll USB devices
+                devs = list(usb.core.find(find_all=True) or ())
+                current_set = {
+                    (
+                        getattr(d, 'idVendor', 0),
+                        getattr(d, 'idProduct', 0),
+                        getattr(d, 'bus', 0),
+                        getattr(d, 'address', 0),
+                    )
+                    for d in devs
+                }
+                if self._last_set is not None and current_set != self._last_set:
                     self.devices_changed.emit()
-                self._last_count = count
+                self._last_set = current_set
+            except usb.core.NoBackendError:
+                break
             except Exception:
                 pass
             
@@ -201,18 +217,3 @@ class DeviceManager:
             return out
         return serial  # fallback to serial
 
-    @staticmethod
-    def _run_silent(cmd: list) -> str:
-        """Run a command, return stdout, swallow errors (deprecated helper, delegates to ADBClient)."""
-        from util.adbclient import ADBClient
-        try:
-            res = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=10,
-                creationflags=ADBClient.get_creation_flags()
-            )
-            return res.stdout
-        except Exception:
-            return ""

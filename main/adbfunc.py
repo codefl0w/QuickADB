@@ -20,11 +20,13 @@ if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
 import subprocess
+import shlex
 import math
 from PyQt6.QtWidgets import (QFileDialog, QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                             QLineEdit, QPushButton, QMessageBox, QTextEdit, QCheckBox)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 import threading
+from typing import Union, List
 
 
 class CommandRunner(QThread): 
@@ -37,11 +39,12 @@ class CommandRunner(QThread):
     """
     output_signal = pyqtSignal(str, str)
 
-    def __init__(self, command: str, platform_tools_path: str = None, env: dict = None):
+    def __init__(self, command: Union[str, List[str]], platform_tools_path: str = None, env: dict = None):
         super().__init__()
         self.command = command
         self.platform_tools_path = platform_tools_path or ToolPaths.instance().platform_tools_dir
         self.env = env
+        self.process = None
 
     def _stream_reader(self, stream, tag: str):
         """Reads a stream line-by-line and emits lines via a signal."""
@@ -59,17 +62,52 @@ class CommandRunner(QThread):
     def run(self):
         """Executes the command and starts threads to monitor its output."""
         try:
+            if isinstance(self.command, list):
+                cmd = [str(x) for x in self.command]
+                shell = False
+            elif isinstance(self.command, str):
+                shell_meta = ("|", "&&", ">", "<", ";", "&")
+                if not any(m in self.command for m in shell_meta):
+                    try:
+                        is_posix = (os.name != 'nt')
+                        tokens = shlex.split(self.command, posix=is_posix)
+                        if not is_posix:
+                            tokens = [
+                                t[1:-1] if len(t) >= 2 and (
+                                    (t.startswith('"') and t.endswith('"')) or
+                                    (t.startswith("'") and t.endswith("'"))
+                                ) else t
+                                for t in tokens
+                            ]
+                        cmd = tokens
+                        shell = False
+                    except Exception:
+                        cmd = self.command
+                        shell = True
+                else:
+                    cmd = self.command
+                    shell = True
+            else:
+                cmd = self.command
+                shell = False
+
+            if not cmd or (isinstance(cmd, str) and not cmd.strip()):
+                self.output_signal.emit("Error: Empty command.", "Error")
+                return
+
+            cwd = self.platform_tools_path if (self.platform_tools_path and os.path.isdir(self.platform_tools_path)) else None
             process = subprocess.Popen(
-                self.command,
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                shell=True,
-                cwd=self.platform_tools_path,
+                shell=shell,
+                cwd=cwd,
                 text=True,
                 bufsize=1,  # Line-buffered
                 env=self.env or get_clean_env(),
                 creationflags=ADBClient.get_creation_flags()
             )
+            self.process = process
 
             # Start reader threads for stdout and stderr to prevent blocking
             t_out = threading.Thread(target=self._stream_reader, args=(process.stdout, "Output"), daemon=True)
@@ -83,7 +121,26 @@ class CommandRunner(QThread):
             t_err.join()
 
         except FileNotFoundError:
-            self.output_signal.emit(f"Error: Command not found. Is '{self.command.split()[0]}' in your PATH or platform-tools?", "Error")
+            first_cmd = ""
+            if 'cmd' in locals() and isinstance(cmd, list) and cmd:
+                first_cmd = cmd[0]
+            elif isinstance(self.command, list) and self.command:
+                first_cmd = str(self.command[0])
+            elif isinstance(self.command, str):
+                try:
+                    tokens = shlex.split(self.command, posix=(os.name != 'nt'))
+                    if tokens:
+                        t = tokens[0]
+                        if len(t) >= 2 and ((t.startswith('"') and t.endswith('"')) or (t.startswith("'") and t.endswith("'"))):
+                            t = t[1:-1]
+                        first_cmd = t
+                    else:
+                        first_cmd = self.command
+                except Exception:
+                    first_cmd = self.command.split()[0] if self.command.split() else self.command
+            else:
+                first_cmd = str(self.command)
+            self.output_signal.emit(f"Error: Command not found. Is '{first_cmd}' in your PATH or platform-tools?", "Error")
         except Exception as e:
             self.output_signal.emit(f"Execution Error: {str(e)}", "Error")
 
@@ -480,7 +537,7 @@ class UninstallAppDialog(QDialog):
 
         if hasattr(self.parent_app, 'run_command_async'):
             self.parent_app.run_command_async(
-                f'adb uninstall "{package_name}"',
+                ["adb", "uninstall", package_name],
                 f"Uninstalling {package_name}",
                 "ADB"
             )
@@ -555,7 +612,7 @@ class ADBPushDialog(QDialog):
 
         if hasattr(self.parent_app, 'run_command_async'):
             self.parent_app.run_command_async(
-                f'adb push "{source_path}" "{destination_path}"',
+                ["adb", "push", source_path, destination_path],
                 f"Pushing {os.path.basename(source_path)} to {destination_path}",
                 "ADB"
             )
@@ -632,7 +689,7 @@ class ADBPullDialog(QDialog):
 
         if hasattr(self.parent_app, 'run_command_async'):
             self.parent_app.run_command_async(
-                f'adb pull "{source_path}" "{destination_folder}"',
+                ["adb", "pull", source_path, destination_folder],
                 f"Pulling {os.path.basename(source_path)} to {destination_folder}",
                 "ADB"
             )
@@ -659,7 +716,7 @@ def sideload_file(self):
     if file_path:
         if hasattr(self, 'run_command_async'):
             self.run_command_async(
-                f'adb sideload "{file_path}"', 
+                ["adb", "sideload", file_path], 
                 f"Sideloading {os.path.basename(file_path)}", 
                 "ADB"
             )

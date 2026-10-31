@@ -11,10 +11,10 @@ import subprocess
 import time
 from datetime import datetime
 from functools import partial
-from typing import Optional, List, Tuple, Callable
+from typing import Optional, List, Tuple, Callable, Union
 
 # Setup root dir to allow imports relative to project root
-from util.resource import get_root_dir, resource_path, get_clean_env, open_url_safe
+from util.resource import get_root_dir, resource_path, get_clean_env, open_url_safe, APP_VERSION
 from util.toolpaths import ToolPaths
 from util.devicemanager import DeviceManager, USBMonitorWorker
 from util.adbclient import ADBClient
@@ -59,15 +59,20 @@ class DeviceRefreshWorker(QThread):
     finished = pyqtSignal(list)
 
     def run(self):
-        dm = DeviceManager.instance()
-        devices = dm.refresh()
-        self.finished.emit(devices)
+        try:
+            dm = DeviceManager.instance()
+            devices = dm.refresh()
+            self.finished.emit(devices)
+        except Exception:
+            self.finished.emit([])
+
+_DeviceScanWorker = DeviceRefreshWorker
 
 class QuickADBApp(QMainWindow):
     # Main window
 
     # Constants
-    APP_VERSION = "V5.3.2"
+    APP_VERSION = APP_VERSION
     APP_SUFFIX = "Hotfix" # Could be beta or personal builds
     BUTTON_WIDTH = 150
     BUTTON_HEIGHT = 40
@@ -85,6 +90,8 @@ class QuickADBApp(QMainWindow):
         self.fastboot_version = "Unknown"
         self.platform_tools_path = ToolPaths.instance().platform_tools_dir
         self.command_runner = None
+        self._active_runners = []
+        self._device_worker = None
         self.payload_dumper_window = None
         self.super_dumper_window = None
         self.terminal_window = None
@@ -95,6 +102,7 @@ class QuickADBApp(QMainWindow):
         self.bootanim_creator_window = None
         self.foss_market_window = None
         self.logcat_window = None
+        self.root_manager_window = None
 
         # Init
         self.init_ui()
@@ -271,32 +279,75 @@ class QuickADBApp(QMainWindow):
             return None
         return getattr(tp, name, None) or tp.adb  # fallback
 
-    def run_command_async(self, command: str, description: str, command_type: str):
+    def run_command_async(self, command: Union[str, List[str]], description: str = "", command_type: str = ""):
         """Executes a command asynchronously in a separate thread."""
         current_time = time.strftime("%H:%M:%S")
+        if not description:
+            if isinstance(command, list) and command:
+                description = " ".join(str(x) for x in command)
+            else:
+                description = str(command)
+        if not command_type:
+            first_tok = command[0] if isinstance(command, list) and command else (str(command).split()[0] if str(command).split() else "ADB")
+            command_type = "ADB" if "adb" in str(first_tok).lower() else ("Fastboot" if "fastboot" in str(first_tok).lower() else "System")
         self.log_action(f"[{current_time}] Executing {command_type} command: {description}", "#00ffff")
 
-        # Resolve adb/fastboot to absolute paths and inject -s SERIAL for multi-device
-        command_stripped = (command or "").lstrip()
         dm = DeviceManager.instance()
-        for tool in ("adb", "fastboot"):
-            if command_stripped == tool or command_stripped.startswith(tool + " "):
+        if isinstance(command, list):
+            cmd_list = [str(x) for x in command]
+            if cmd_list:
+                first_tok = os.path.basename(cmd_list[0]).lower()
+                tool = None
+                if first_tok in ("adb", "adb.exe"):
+                    tool = "adb"
+                elif first_tok in ("fastboot", "fastboot.exe"):
+                    tool = "fastboot"
+
+                if tool:
+                    exe_path = self._get_executable_path(tool)
+                    if exe_path:
+                        cmd_list[0] = exe_path
+                    remainder = " ".join(cmd_list[1:])
+                    is_global = False
+                    if tool == "adb":
+                        is_global = dm.is_global_adb_command(remainder)
+                    elif tool == "fastboot":
+                        is_global = dm.is_global_fastboot_command(remainder)
+                    if not is_global and dm.selected_serial and (len(cmd_list) < 2 or cmd_list[1] != "-s"):
+                        cmd_list[1:1] = ["-s", dm.selected_serial]
+            command = cmd_list
+        elif isinstance(command, str):
+            # Resolve adb/fastboot to absolute paths and inject -s SERIAL for multi-device
+            command_stripped = (command or "").strip()
+            first_word = command_stripped.split()[0].lower() if command_stripped.split() else ""
+            tool = None
+            if first_word in ("adb", "adb.exe") or os.path.basename(first_word) in ("adb", "adb.exe"):
+                tool = "adb"
+            elif first_word in ("fastboot", "fastboot.exe") or os.path.basename(first_word) in ("fastboot", "fastboot.exe"):
+                tool = "fastboot"
+
+            if tool:
                 exe_path = self._get_executable_path(tool)
                 if exe_path:
-                    remainder = command_stripped[len(tool):].lstrip()
-                    # Inject -s SERIAL for ADB/Fastboot commands that target a device
-                    serial_flag = ""
-                    if tool == "adb" and not dm.is_global_adb_command(remainder):
-                        serial_flag = dm.serial_flag()
-                    elif tool == "fastboot" and not dm.is_global_fastboot_command(remainder):
-                        serial_flag = dm.serial_flag()
-                    command = f'"{exe_path}" {serial_flag}{remainder}'
-                break
+                    raw_first = command_stripped.split()[0]
+                    remainder = command_stripped[len(raw_first):].strip()
+                    is_global = False
+                    if tool == "adb":
+                        is_global = dm.is_global_adb_command(remainder)
+                    elif tool == "fastboot":
+                        is_global = dm.is_global_fastboot_command(remainder)
+                    has_serial = bool(dm.selected_serial and not is_global and not remainder.startswith("-s"))
+                    serial_flag = f'-s "{dm.selected_serial}" ' if has_serial else ""
+                    command = f'"{exe_path}" {serial_flag}{remainder}'.strip()
 
-        self.command_runner = CommandRunner(command, self.platform_tools_path)
-        self.command_runner.env = get_clean_env()
-        self.command_runner.output_signal.connect(self.log_terminal_output)
-        self.command_runner.start()
+        runner = CommandRunner(command, self.platform_tools_path)
+        runner.env = get_clean_env()
+        runner.output_signal.connect(self.log_terminal_output)
+        self._active_runners.append(runner)
+        runner.finished.connect(lambda *args, r=runner: self._active_runners.remove(r) if r in self._active_runners else None)
+        self.command_runner = runner
+        runner.start()
+        return runner
 
 
     def _populate_commands_grid(self, commands: List[Tuple[str, Callable]], items_per_row: int = 3):
@@ -388,7 +439,7 @@ class QuickADBApp(QMainWindow):
             self, "Select Image File", "", "Image Files (*.img);;Binary Files (*.bin);;All Files (*)"
         )
         if file_path:
-            cmd = f'fastboot flash {partition_name} "{file_path}"'
+            cmd = ["fastboot", "flash", partition_name, file_path]
             self.run_command_async(cmd, f"Flashing {partition_name}", "Fastboot")
 
     def open_file_explorer(self):
@@ -481,11 +532,8 @@ class QuickADBApp(QMainWindow):
     def uninstall_app(self): QMessageBox.information(self, "Not Implemented", "Uninstall App feature coming soon.")
     def sideload_file(self): QMessageBox.information(self, "Not Implemented", "ADB Sideload feature coming soon.")
     def show_device_info(self): QMessageBox.information(self, "Not Implemented", "Device specifications feature coming soon.")
-    def show_wireless_adb_ui(self):
-        if callable(getattr(self, "_wireless_adb_impl", None)):
-            self._wireless_adb_impl()
-        else:
-            QMessageBox.information(self, "Not Implemented", "Wireless ADB UI not yet implemented.")
+    def show_wireless_adb_ui(self): QMessageBox.information(self, "Not Implemented", "Wireless ADB UI feature coming soon.")
+    def activate_adb_over_tcpip(self): QMessageBox.information(self, "Not Implemented", "Wireless ADB feature coming soon.")
 
     # --- Device Management ---
 
@@ -500,6 +548,8 @@ class QuickADBApp(QMainWindow):
 
     def check_devices(self):
         """Scan connected devices and populate the dropdown."""
+        if getattr(self, "_device_worker", None) is not None and self._device_worker.isRunning():
+            return
         self.log_action("Scanning for devices...", "#00ffff")
         self.refresh_devices_btn.setEnabled(False)
         self.device_combo.setPlaceholderText("Scanning...")

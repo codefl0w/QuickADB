@@ -17,12 +17,17 @@ from PyQt6.QtGui import QPixmap, QImage
 
 from util.adbclient import ADBClient
 
-import qrcode
+try:
+    import qrcode
+except ImportError:
+    qrcode = None
 
 try:
     from zeroconf import Zeroconf, ServiceBrowser, ServiceStateChange
 except ImportError:
     Zeroconf = None
+    ServiceBrowser = None
+    ServiceStateChange = None
 
 
 class AutoConnectWorker(QThread):
@@ -105,6 +110,8 @@ class WirelessADBWorker(QThread):
         self.adb_cmd = adb_cmd
 
         self.zeroconf = None
+        self.browser_pair = None
+        self.browser_connect = None
         self.is_paired = False
         self.is_connected = False
         self.stop_requested = False
@@ -132,11 +139,29 @@ class WirelessADBWorker(QThread):
         self.stop_requested = True
 
     def _cleanup(self):
+        if self.browser_pair:
+            try:
+                self.browser_pair.cancel()
+            except Exception:
+                pass
+            self.browser_pair = None
+        if self.browser_connect:
+            try:
+                self.browser_connect.cancel()
+            except Exception:
+                pass
+            self.browser_connect = None
         if self.zeroconf:
-            self.zeroconf.close()
+            try:
+                self.zeroconf.close()
+            except Exception:
+                pass
+            self.zeroconf = None
 
-    def _on_service_added(self, zeroconf, service_type, name, state_change):
-        if self.stop_requested or state_change != ServiceStateChange.Added:
+    def _on_service_added(self, zeroconf, service_type, name, state_change=None):
+        if self.stop_requested:
+            return
+        if state_change is not None and ServiceStateChange is not None and state_change != ServiceStateChange.Added:
             return
 
         info = zeroconf.get_service_info(service_type, name)
@@ -144,6 +169,8 @@ class WirelessADBWorker(QThread):
             return
 
         if service_type == "_adb-tls-pairing._tcp.local." and not self.is_paired:
+            if self.service_name and self.service_name not in name:
+                return
             self.status_update.emit("Found device! Pairing...")
             self._attempt_pair(info)
 
@@ -164,11 +191,13 @@ class WirelessADBWorker(QThread):
             if "Successfully paired" in proc.stdout:
                 self.is_paired = True
                 self.paired_success.emit()
-                ServiceBrowser(self.zeroconf, "_adb-tls-connect._tcp.local.", handlers=[self._on_service_added])
+                self.browser_connect = ServiceBrowser(self.zeroconf, "_adb-tls-connect._tcp.local.", handlers=[self._on_service_added])
             else:
                 self.error_occurred.emit(f"Pairing failed: {proc.stdout or proc.stderr}")
         except Exception as e:
             self.error_occurred.emit(f"Pairing Error: {str(e)}")
+
+    pair_device = _attempt_pair
 
     def _attempt_connect(self, info):
         ip = info.parsed_addresses()[0] if info.addresses else None
@@ -220,6 +249,7 @@ class WirelessADBDialog(QDialog):
         self.adb_cmd = adb_cmd
         self.worker = None
         self.auto_worker = None  # New worker for Pairing Code auto-connect
+        self.manual_pair_worker = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -443,11 +473,23 @@ class WirelessADBDialog(QDialog):
             self.parent_app.run_command_async(f"adb connect {address}", f"Connecting to {address}", "ADB")
             self.accept()
 
-    def closeEvent(self, event):
+    def _cleanup_worker(self):
         if self.worker:
             self.worker.stop()
-            self.worker.wait(1000)
+            self.worker.wait(2000)
+            self.worker = None
         if self.auto_worker:
             self.auto_worker.stop()
-            self.auto_worker.wait(1000)
+            self.auto_worker.wait(2000)
+            self.auto_worker = None
+        if getattr(self, 'manual_pair_worker', None):
+            self.manual_pair_worker.wait(1000)
+            self.manual_pair_worker = None
+
+    def done(self, result):
+        self._cleanup_worker()
+        super().done(result)
+
+    def closeEvent(self, event):
+        self._cleanup_worker()
         super().closeEvent(event)

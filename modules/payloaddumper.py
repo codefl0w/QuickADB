@@ -9,7 +9,8 @@ import os
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(script_dir)
-sys.path.insert(0, root_dir)
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 
 
 import subprocess
@@ -20,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QTextCursor, QColor
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from util.resource import resource_path
 from util.thememanager import ThemeManager
 
 
@@ -27,11 +29,11 @@ class PayloadDumperThread(QThread):
     output_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
     
-    def __init__(self, payload_bin_path, output_dir,):
+    def __init__(self, payload_bin_path, output_dir):
         super().__init__()
         self.payload_bin_path = payload_bin_path
         self.output_dir = output_dir
-        self.dumper_path =  os.path.join(root_dir, "util")
+        self.dumper_path = resource_path("util")
         
     def run(self):
         try:
@@ -59,24 +61,23 @@ class PayloadDumperThread(QThread):
                     subprocess.CREATE_NO_WINDOW
                 )
 
-            # Run the process
+            # Run the process with stderr merged to prevent pipe buffer deadlock
             process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
-                universal_newlines=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 creationflags=creationflags
             )
             
-            # Process stdout in real-time
+            # Process combined stdout and stderr in real-time
             for line in process.stdout:
-                self.output_signal.emit(line.strip())
-            
-            # Process stderr in real-time
-            for line in process.stderr:
-                self.output_signal.emit(f"Error: {line.strip()}")
+                line_str = line.strip()
+                if line_str:
+                    self.output_signal.emit(line_str)
                 
             # Wait for process to complete
             return_code = process.wait()
@@ -190,8 +191,8 @@ class PayloadDumperApp(QMainWindow):
     def select_payload_bin(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, 
-            "Select Payload.bin File",
-            "",
+            "Select Payload.bin File", 
+            "", 
             "Payload.bin Files (*.bin);;All Files (*)"
         )
         if file_path:

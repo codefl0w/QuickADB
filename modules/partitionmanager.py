@@ -441,7 +441,6 @@ class PartitionFlashWorker(QThread):
                 partition_success = False
             else:
                 self.log_message.emit(f"Successfully flashed {partition_name}")
-                self.progress.emit(f"Successfully flashed {partition_name}")
             
             # Step 3: Clean up the image from the device
             self.progress.emit(f"Cleaning up...")
@@ -455,6 +454,9 @@ class PartitionFlashWorker(QThread):
                 self.log_message.emit(f"Failed to remove temporary file: {rm_result.stderr.strip()}")
                 self.progress.emit(f"Failed to clean up temporary file")
                 # Not counting cleanup failures as a complete failure
+            
+            if partition_success:
+                self.progress.emit(f"Successfully flashed {partition_name}")
             
             # Emit final status
             self.finished_with_status.emit(partition_success)
@@ -604,8 +606,42 @@ class PartitionManager(QMainWindow):
             self.statusBar().showMessage("No partitions selected")
     
 
-    def update_progress(self, message):
+    def update_progress(self, percentage):
+        if isinstance(percentage, (int, float)):
+            val = int(percentage)
+            self.statusBar().showMessage(f"Operation in progress... {val}%")
+            if hasattr(self, 'progress_dialog') and self.progress_dialog is not None:
+                if val >= self.progress_dialog.value():
+                    self.progress_dialog.setValue(val)
+        elif isinstance(percentage, str) and percentage.rstrip('%').isdigit():
+            val = int(percentage.rstrip('%'))
+            self.statusBar().showMessage(f"Operation in progress... {val}%")
+            if hasattr(self, 'progress_dialog') and self.progress_dialog is not None:
+                if val >= self.progress_dialog.value():
+                    self.progress_dialog.setValue(val)
+        else:
+            message = str(percentage)
+            self.statusBar().showMessage(message)
+            if hasattr(self, 'progress_dialog') and self.progress_dialog is not None:
+                self.progress_dialog.setLabelText(message)
+                val = None
+                if "Pushing" in message:
+                    val = 25
+                elif "Flashing" in message:
+                    val = 60
+                elif "Cleaning" in message:
+                    val = 85
+                elif "Successfully" in message:
+                    val = 100
+                if val is not None and val >= self.progress_dialog.value():
+                    self.progress_dialog.setValue(val)
+
+    def update_progress_detail(self, percentage, message):
+        """Update progress detail for pull or flash operations."""
         self.statusBar().showMessage(message)
+        if hasattr(self, 'progress_dialog') and self.progress_dialog is not None:
+            self.progress_dialog.setValue(int(percentage))
+            self.progress_dialog.setLabelText(message)
 
     
     def set_ui_enabled(self, state: bool):
@@ -714,40 +750,35 @@ class PartitionManager(QMainWindow):
         # Update status
         self.statusBar().showMessage("Error loading partitions")
     
+    def update_selection_count(self):
+        """Update selected_partitions list and status bar based on all checked items."""
+        self.selected_partitions = []
+        for row in range(self.model.rowCount()):
+            item = self.model.item(row, 0)
+            if item and item.checkState() == Qt.CheckState.Checked:
+                partition_info = item.data(Qt.ItemDataRole.UserRole)
+                if partition_info:
+                    self.selected_partitions.append(partition_info)
+        self.statusBar().showMessage(f"{len(self.selected_partitions)} partitions selected")
+
     def toggle_selection(self, index):
-        """Toggle the selection state of a partition."""
-        # Use the proxy index to get the actual model item (handles sorting)
-        row = index.row()
-        checkbox_item = self.model.item(row, 0)
-        
-        if not checkbox_item:
+        if not index.isValid():
             return
-            
-        # Toggle checkbox state regardless of which column was clicked
-        new_state = Qt.CheckState.Unchecked if checkbox_item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked
-        checkbox_item.setCheckState(new_state)
-        
-        # Update the selection list based on the new state
-        self.update_selection_from_checkbox(checkbox_item)
+        if index.column() == 0:
+            self.update_selection_count()
+            return
+
+        checkbox_index = index.siblingAtColumn(0)
+        item = self.model.itemFromIndex(checkbox_index)
+        if item and item.isCheckable():
+            current_state = item.checkState()
+            new_state = Qt.CheckState.Unchecked if current_state == Qt.CheckState.Checked else Qt.CheckState.Checked
+            item.setCheckState(new_state)
+            self.update_selection_count()
     
     def update_selection_from_checkbox(self, checkbox_item):
         """Update selected_partitions list based on checkbox state from the item itself."""
-        partition_info = checkbox_item.data(Qt.ItemDataRole.UserRole)
-        if not partition_info:
-            return
-            
-        if checkbox_item.checkState() == Qt.CheckState.Checked:
-            # Only add if not already in the list
-            if not any(p['name'] == partition_info['name'] for p in self.selected_partitions):
-                self.selected_partitions.append(partition_info)
-                self.log_message(f"Selected partition: {partition_info['name']}")
-        else:
-            # Remove from selected partitions
-            self.selected_partitions = [p for p in self.selected_partitions if p['name'] != partition_info['name']]
-            self.log_message(f"Deselected partition: {partition_info['name']}")
-        
-        # Update status bar
-        self.statusBar().showMessage(f"{len(self.selected_partitions)} partitions selected")
+        self.update_selection_count()
     
     def pull_partitions(self):
         """Pull selected partitions to the user's system."""
@@ -760,14 +791,16 @@ class PartitionManager(QMainWindow):
             return
         
         # Start the pull operation in a separate thread
-        self.worker = PartitionPullWorker(self.platform_tools_path, self.selected_partitions, save_dir)
-        self.worker.log_message.connect(self.log_message)
-        self.worker.progress.connect(self.update_progress)
-        self.worker.finished_with_status.connect(self.pull_finished) 
+        self.pull_worker = PartitionPullWorker(self.platform_tools_path, self.selected_partitions, save_dir)
+        self.worker = self.pull_worker
+        self.pull_worker.log_message.connect(self.log_message)
+        self.pull_worker.progress.connect(self.update_progress)
+        self.pull_worker.progress_detail.connect(self.update_progress_detail)
+        self.pull_worker.finished_with_status.connect(self.pull_finished) 
         
         # Disable UI elements during operation
         self.set_ui_enabled(False)
-        self.worker.start()
+        self.pull_worker.start()
 
     def flash_partition(self):
         """Flash an image to a selected partition."""
@@ -811,6 +844,8 @@ class PartitionManager(QMainWindow):
         self.progress_dialog.setCancelButton(None)  # Disable cancel button for safety
         self.progress_dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
         self.progress_dialog.setMinimumWidth(400)
+        self.progress_dialog.setAutoReset(False)
+        self.progress_dialog.setAutoClose(False)
         self.progress_dialog.show()
         
         # Start the flash operation in a separate thread
@@ -828,6 +863,7 @@ class PartitionManager(QMainWindow):
         """Handle the completion of the flash operation."""
         if hasattr(self, 'progress_dialog') and self.progress_dialog is not None:
             self.progress_dialog.close()
+            self.progress_dialog = None
         
         # Re-enable UI elements
         self.set_ui_enabled(True)
@@ -859,6 +895,9 @@ class PartitionManager(QMainWindow):
     
     def pull_finished(self, success, success_count, total_count):
         """Handle the completion of the pull operation."""
+        if hasattr(self, 'progress_dialog') and self.progress_dialog is not None:
+            self.progress_dialog.close()
+            self.progress_dialog = None
         # Re-enable UI elements
         self.set_ui_enabled(True)
         

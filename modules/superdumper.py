@@ -10,16 +10,21 @@ import os
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(script_dir)
-sys.path.insert(0, root_dir)
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
+from util.resource import get_root_dir, resource_path
+root_dir = get_root_dir()
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 
 from util.thememanager import ThemeManager
-import subprocess
-import threading
+from util.unsuper import OptimizedLpUnpack
 from pathlib import Path
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                            QHBoxLayout, QPushButton, QTextEdit, QFileDialog, 
                            QFrame, QMessageBox)
-from PyQt6.QtCore import QObject, pyqtSignal, Qt, QSize, QEvent
+from PyQt6.QtCore import QObject, QThread, pyqtSignal, Qt, QSize
 from PyQt6.QtGui import QFont
 
 
@@ -28,16 +33,42 @@ class LogSignal(QObject):
     signal = pyqtSignal(str)
 
 
+class ExtractionWorker(QThread):
+    """Worker thread for running super.img extraction in-process via OptimizedLpUnpack."""
+    log_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(bool, str)
+
+    def __init__(self, super_img_path: str, output_dir: str):
+        super().__init__()
+        self.super_img_path = super_img_path
+        self.output_dir = output_dir
+
+    def run(self):
+        try:
+            unpacker = OptimizedLpUnpack(
+                super_image=self.super_img_path,
+                output_dir=self.output_dir,
+                log_callback=self.log_signal.emit
+            )
+            return_code = unpacker.run()
+            if return_code == 0:
+                self.finished_signal.emit(True, f"Successfully extracted super.img to {self.output_dir}")
+            else:
+                self.finished_signal.emit(False, f"Extraction failed with exit code {return_code}")
+        except Exception as e:
+            self.finished_signal.emit(False, f"Extraction failed with error: {str(e)}")
+
+
 class SuperImgDumperUI(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("QuickADB super.img dumper")
         self.setFixedSize(600, 450)
 
-        
         # Setup instance variables
         self.super_img_path = None
         self.output_dir = None
+        self.extraction_worker = None
         self.log_signal = LogSignal()
         self.log_signal.signal.connect(self.update_log)
         ThemeManager.apply_theme(self)
@@ -85,8 +116,6 @@ class SuperImgDumperUI(QMainWindow):
         self.log("This function is powered by unsuper.")
         self.log("https://github.com/codefl0w/unsuper")
 
-           
-
     def log(self, message):
         """Thread-safe logging function that emits a signal for the GUI thread"""
         self.log_signal.signal.emit(message)
@@ -101,7 +130,6 @@ class SuperImgDumperUI(QMainWindow):
     
     def select_super_img(self):
         """Open file dialog to select the super.img file"""
-
         self.show()  # Need to refresh the window after changing flags
         
         file_path, _ = QFileDialog.getOpenFileName(
@@ -111,7 +139,6 @@ class SuperImgDumperUI(QMainWindow):
             "Image Files (*.img)"
         )
         
-
         self.show()
         
         if file_path:
@@ -123,15 +150,12 @@ class SuperImgDumperUI(QMainWindow):
     
     def select_output_folder(self):
         """Open dialog to select output directory"""
-
         self.show()
         
         folder_path = QFileDialog.getExistingDirectory(
             self, 
             "Select Output Directory"
         )
-        
-
 
         self.show()
         
@@ -172,125 +196,26 @@ class SuperImgDumperUI(QMainWindow):
         self.output_dir_button.setEnabled(False)
         self.extract_button.setEnabled(False)
         
-        # Start extraction in a separate thread
-        extraction_thread = threading.Thread(target=self.run_extraction)
-        extraction_thread.daemon = True
-        extraction_thread.start()
-    
-    def run_extraction(self):
-        """Run unsuper as a subprocess to extract the super.img contents"""
-        try:
-            # Find unsuper.py - assuming it's in the same directory as this script
-            unsuper_path = os.path.join(root_dir, "util", "unsuper.py")
-            
-            # Check if unsuper.py exists
-            if not os.path.exists(unsuper_path):
-                self.log(f"[ERROR] unsuper.py not found at: {unsuper_path}")
-                return
-                
+        # Start extraction in a worker thread
+        self.extraction_worker = ExtractionWorker(self.super_img_path, self.output_dir)
+        self.extraction_worker.log_signal.connect(self.update_log)
+        self.extraction_worker.finished_signal.connect(self.extraction_finished)
+        self.extraction_worker.start()
 
-            
-            
-            # Direct command line approach 
-            command = [
-                sys.executable, 
-                "-u",  # Force unbuffered output
-                unsuper_path, 
-                self.super_img_path, 
-                self.output_dir
-            ]
-            
-            # Windows specific: Create a new process group and hide the console window.
-            creationflags = 0
-            if os.name == 'nt':
-                creationflags = (
-                    subprocess.CREATE_NEW_PROCESS_GROUP |
-                    subprocess.CREATE_NO_WINDOW
-                )
-
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,  # Line buffered
-                cwd=script_dir,  # Set working directory to script directory
-                creationflags=creationflags
-            )
-            
-            # Real-time output processing - read stdout and stderr in real-time
-            while True:
-                # Check if process has terminated
-                if process.poll() is not None:
-                    break
-                
-                # Read stdout line by line
-                stdout_line = process.stdout.readline()
-                if stdout_line:
-                    self.log(stdout_line.strip())
-                
-                # Read stderr line by line
-                stderr_line = process.stderr.readline()
-                if stderr_line:
-                    self.log(f"[ERROR] {stderr_line.strip()}")
-            
-            # Get any remaining output after process ends
-            remaining_stdout, remaining_stderr = process.communicate()
-            if remaining_stdout:
-                for line in remaining_stdout.splitlines():
-                    if line.strip():
-                        self.log(line.strip())
-            if remaining_stderr:
-                for line in remaining_stderr.splitlines():
-                    if line.strip():
-                        self.log(f"[ERROR] {line.strip()}")
-            
-            # Get return code
-            return_code = process.returncode
-            
-            if return_code == 0:
-                self.log("[INFO] Extraction complete.")
-                QApplication.instance().postEvent(
-                    self,
-                    ShowSuccessMessageEvent(f"Successfully extracted super.img to {self.output_dir}")
-                )
-            else:
-                self.log(f"[ERROR] Process exited with code {return_code}.")
-
-        
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            self.log(f"[ERROR] An unexpected error occurred: {str(e)}")
-            self.log(f"[ERROR] Details: {error_details}")
-        
-        finally:
-            # Re-enable buttons on the main thread
-            QApplication.instance().postEvent(
-                self, 
-                ReenableButtonsEvent()
-            )
-
-
-class ReenableButtonsEvent(QEvent):
-    """Custom event to safely re-enable buttons from a non-GUI thread"""
-    EVENT_TYPE = QEvent.Type(QEvent.Type.User + 1)
-    
-    def __init__(self):
-        super().__init__(self.EVENT_TYPE)
-
-
-class ShowSuccessMessageEvent(QEvent):
-    """Custom event to show success message on the main thread"""
-    EVENT_TYPE = QEvent.Type(QEvent.Type.User + 2)
-    
-    def __init__(self, message):
-        super().__init__(self.EVENT_TYPE)
-        self.message = message
+    def extraction_finished(self, success, message):
+        """Handle completion of the extraction worker thread."""
+        self.super_img_button.setEnabled(True)
+        self.output_dir_button.setEnabled(True)
+        self.extract_button.setEnabled(True)
+        if success:
+            self.log("[INFO] Extraction complete.")
+            QMessageBox.information(self, "Success", message)
+        else:
+            self.log(f"[ERROR] {message}")
+            QMessageBox.critical(self, "Error", message)
 
 
 def show_super_img_dumper(parent=None):
- 
     # Create the application if it doesn't exist
     app = QApplication.instance()
     if app is None:
@@ -308,23 +233,6 @@ def show_super_img_dumper(parent=None):
         return app.exec()
     else:
         return window
-
-
-# Handle custom events for re-enabling buttons
-def event(self, event):
-    if event.type() == ReenableButtonsEvent.EVENT_TYPE:
-        self.super_img_button.setEnabled(True)
-        self.output_dir_button.setEnabled(True)
-        self.extract_button.setEnabled(True)
-        return True
-    elif event.type() == ShowSuccessMessageEvent.EVENT_TYPE:
-        QMessageBox.information(self, "Success", event.message)
-        return True
-    return super(SuperImgDumperUI, self).event(event)
-
-
-# Add the custom event handler to the SuperImgDumperUI class
-SuperImgDumperUI.event = event
 
 
 # For standalone execution

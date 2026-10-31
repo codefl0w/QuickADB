@@ -14,8 +14,9 @@ import re
 import tempfile
 import shutil
 import json
+import shlex
 import concurrent.futures
-from typing import List
+from typing import List, Optional, Tuple, Union
 
 from util.apkapi import APKInstallOptions, install_prepared_package, prepare_package_source, supported_package_dialog_filter
 from util.thememanager import ThemeManager
@@ -53,23 +54,76 @@ class AppManagerWorker(QThread):
         self.operation = operation
         self.kwargs = kwargs
         self.parent = parent
+        self.package_name = kwargs.get('package_name')
+        self.package_names = kwargs.get('package_names')
+        self.backup_items = kwargs.get('backup_items')
+        self.permissions = kwargs.get('permissions')
+        self.permission = kwargs.get('permission')
+        self.action = kwargs.get('action')
+        self.backup_path = kwargs.get('backup_path')
+        self.save_dir = kwargs.get('save_dir')
 
         self.platform_tools_path = parent.platform_tools_path if parent else "."
 
     def run(self):
         """Executes the requested operation in a background thread."""
+        packages = (
+            self.kwargs.get('package_names') or
+            getattr(self, 'package_names', None)
+        )
+        if not packages:
+            pkg = getattr(self, 'package_name', None) or self.kwargs.get('package_name')
+            if pkg:
+                packages = [pkg]
+
+        permissions = (
+            self.kwargs.get('permissions') or
+            getattr(self, 'permissions', None)
+        )
+        if not permissions:
+            perm = getattr(self, 'permission', None) or self.kwargs.get('permission')
+            if perm:
+                permissions = [perm]
+
+        items = (
+            self.kwargs.get('backup_items') or
+            getattr(self, 'backup_items', None) or
+            packages
+        )
+
+        target_pkg = getattr(self, 'package_name', None) or self.kwargs.get('package_name')
+        if not target_pkg and packages and len(packages) == 1:
+            target_pkg = packages[0]
+            self.package_name = target_pkg
+
+        action = self.kwargs.get('action') or getattr(self, 'action', None)
+        save_dir = self.kwargs.get('save_dir') or getattr(self, 'save_dir', None)
+        backup_path = self.kwargs.get('backup_path') or getattr(self, 'backup_path', None)
+
         operations = {
             "load_apps": self.load_apps,
-            "app_details": lambda: self.fetch_app_details(self.kwargs.get('package_name')),
-            "permissions": lambda: self.fetch_permissions(self.kwargs.get('package_name')),
-            "modify_app": lambda: self.modify_app(self.kwargs.get('action'), self.kwargs.get('package_name')),
-            "backup_app": lambda: self.backup_app(self.kwargs.get('package_name'), self.kwargs.get('save_dir')),
+            "app_details": lambda: self.fetch_app_details(target_pkg),
+            "permissions": lambda: self.fetch_permissions(target_pkg),
+            "modify_app": lambda: (
+                self.modify_apps(action, packages) if (packages and len(packages) > 1)
+                else self.modify_app(action, target_pkg)
+            ),
+            "modify_apps": lambda: self.modify_apps(action, packages or []),
+            "backup_app": lambda: (
+                self.backup_apps_op(items, save_dir) if (items and len(items) > 1)
+                else self.backup_app(target_pkg, save_dir, backup_path)
+            ),
+            "backup_apps": lambda: self.backup_apps_op(items or [], save_dir),
             "restore_app": lambda: self.restore_apps([self.kwargs.get('file_path')]),
             "restore_apps": lambda: self.restore_apps(self.kwargs.get('file_paths')),
-            "modify_permission": lambda: self.modify_permission(
-                self.kwargs.get('package_name'),
-                self.kwargs.get('permission'),
-                self.kwargs.get('action')
+            "modify_permission": lambda: (
+                self.modify_permissions_op(target_pkg, permissions, action) if (permissions and len(permissions) > 1)
+                else self.modify_permission(target_pkg, permissions[0] if permissions else self.kwargs.get('permission'), action)
+            ),
+            "modify_permissions": lambda: self.modify_permissions_op(
+                target_pkg,
+                permissions or [],
+                action
             )
         }
         
@@ -157,12 +211,22 @@ class AppManagerWorker(QThread):
 
         return None, None, None
 
-    def fetch_app_details(self, package_name):
+    def fetch_app_details(self, package_name: Optional[str] = None):
         """Fetch detailed information about an app."""
+        if package_name:
+            self.package_name = package_name
+        elif not getattr(self, 'package_name', None):
+            self.package_name = self.kwargs.get('package_name')
+
+        target_pkg = self.package_name
+        if not target_pkg:
+            self.log_message.emit("No package name specified for app details.")
+            return
+
         try:
-            result = self._run_adb_command(['shell', f'dumpsys package {package_name}'])
+            result = self._run_adb_command(['shell', f'dumpsys package {shlex.quote(self.package_name)}'])
             if result.returncode != 0 or not result.stdout.strip():
-                self.log_message.emit(f"Failed to fetch details for {package_name}")
+                self.log_message.emit(f"Failed to fetch details for {target_pkg}")
                 return
 
             output = result.stdout
@@ -172,8 +236,8 @@ class AppManagerWorker(QThread):
             _m_min_sdk      = re.search(r'minSdk=(\d+)', output)
             _m_target_sdk   = re.search(r'targetSdk=(\d+)', output)
             details = {
-                "App Name":     self._derive_app_name(package_name),
-                "Package Name": package_name,
+                "App Name":     self._derive_app_name(target_pkg),
+                "Package Name": target_pkg,
                 "App Path":     _m_code_path.group(1)    if _m_code_path    else "Unknown",
                 "App Version":  f"{_m_version_name.group(1) if _m_version_name else '?'} "
                                 f"(Code: {_m_version_code.group(1) if _m_version_code else '?'})",
@@ -182,16 +246,26 @@ class AppManagerWorker(QThread):
             }
             self.app_details_loaded.emit(details)
         except Exception as e:
-            self.log_message.emit(f"Error fetching details for {package_name}: {e}")
+            self.log_message.emit(f"Error fetching details for {target_pkg}: {e}")
 
-    def fetch_permissions(self, package_name):
+    def fetch_permissions(self, package_name: Optional[str] = None):
         """Fetch permissions for the specified package."""
+        if package_name:
+            self.package_name = package_name
+        elif not getattr(self, 'package_name', None):
+            self.package_name = self.kwargs.get('package_name')
+
+        target_pkg = self.package_name
+        if not target_pkg:
+            self.log_message.emit("No package name specified for permissions.")
+            return
+
         try:
-            self._emit_status(f"Fetching permissions for {package_name}...", 0)
-            result = self._run_adb_command(['shell', f'dumpsys package {package_name}'])
+            self._emit_status(f"Fetching permissions for {target_pkg}...", 0)
+            result = self._run_adb_command(['shell', f'dumpsys package {shlex.quote(self.package_name)}'])
             if result.returncode != 0 or not result.stdout.strip():
-                self.log_message.emit(f"Failed to fetch permissions for {package_name}.")
-                self._emit_status(f"Failed to fetch permissions for {package_name}", 5000)
+                self.log_message.emit(f"Failed to fetch permissions for {target_pkg}.")
+                self._emit_status(f"Failed to fetch permissions for {target_pkg}", 5000)
                 return
 
             output = result.stdout
@@ -211,24 +285,38 @@ class AppManagerWorker(QThread):
                                  f"{len(requested_permissions)} requested, "
                                  f"and {len(runtime_permissions)} runtime permissions.")
             self._emit_status(
-                f"Fetched permissions for {package_name} "
+                f"Fetched permissions for {target_pkg} "
                 f"({len(runtime_permissions)} runtime, {len(requested_permissions)} requested).",
                 5000
             )
             self.permissions_loaded.emit(declared_permissions, requested_permissions, runtime_permissions)
         except Exception as e:
-            self.log_message.emit(f"Error fetching permissions for {package_name}: {e}")
-            self._emit_status(f"Error fetching permissions for {package_name}", 5000)
+            self.log_message.emit(f"Error fetching permissions for {target_pkg}: {e}")
+            self._emit_status(f"Error fetching permissions for {target_pkg}", 5000)
 
-    def modify_app(self, action, package_name):
-        """Modify an app (disable, enable, uninstall)."""
+    get_permissions = fetch_permissions
+
+    def modify_app(self, action: Optional[str] = None, package_name: Optional[str] = None):
+        """Modify an app (disable, enable, uninstall, stop)."""
+        if package_name:
+            self.package_name = package_name
+        elif not getattr(self, 'package_name', None):
+            self.package_name = self.kwargs.get('package_name')
+
+        action = action or self.kwargs.get('action') or getattr(self, 'action', None)
+        target_pkg = self.package_name
+        if not target_pkg or not action:
+            self.log_message.emit("Missing package name or action to modify app.")
+            return
+
         try:
-            self.log_message.emit(f"{action.capitalize()}ing {package_name}...")
+            self.log_message.emit(f"{action.capitalize()}ing {target_pkg}...")
+            quoted_pkg = shlex.quote(self.package_name)
             command_map = {
-                "stop": ['shell', 'am', 'stop-app', package_name],
-                "disable": ['shell', 'pm', 'disable-user', '--user', '0', package_name],
-                "enable": ['shell', 'pm', 'enable', package_name],
-                "uninstall": ['uninstall', '--user', '0', package_name]
+                "stop": ['shell', 'am', 'stop-app', quoted_pkg],
+                "disable": ['shell', 'pm', 'disable-user', '--user', '0', quoted_pkg],
+                "enable": ['shell', 'pm', 'enable', quoted_pkg],
+                "uninstall": ['uninstall', '--user', '0', target_pkg]
             }
             command = command_map.get(action)
             if not command:
@@ -238,16 +326,42 @@ class AppManagerWorker(QThread):
             result = self._run_adb_command(command)
             if result.returncode == 0:
                 past_tense = "stopped" if action == "stop" else f"{action}d"
-                self.log_message.emit(f"Successfully {past_tense} {package_name}.")
+                self.log_message.emit(f"Successfully {past_tense} {target_pkg}.")
             else:
-                self.log_message.emit(f"Failed to {action} {package_name}: {result.stderr.strip()}")
+                self.log_message.emit(f"Failed to {action} {target_pkg}: {result.stderr.strip()}")
         except Exception as e:
             self.log_message.emit(f"Error performing action '{action}': {e}")
 
-    def modify_permission(self, package_name, permission, action):
+    def modify_apps(self, action: str, package_names: List[str]):
+        """Modify multiple apps sequentially."""
+        if not package_names:
+            self.log_message.emit("No apps specified to modify.")
+            return
+        total = len(package_names)
+        for idx, pkg in enumerate(package_names, 1):
+            if not pkg:
+                continue
+            self._emit_status(f"{action.capitalize()}ing {pkg} ({idx}/{total})...", 0)
+            self.modify_app(action, pkg)
+        self._emit_status(f"Finished {action} action on {total} app(s).", 5000)
+
+    def modify_permission(self, package_name: Optional[str] = None, permission: Optional[str] = None, action: Optional[str] = None):
         """Grant or revoke a permission."""
+        if package_name:
+            self.package_name = package_name
+        elif not getattr(self, 'package_name', None):
+            self.package_name = self.kwargs.get('package_name')
+
+        target_pkg = self.package_name
+        action = action or self.kwargs.get('action') or getattr(self, 'action', None)
+        permission = permission or self.kwargs.get('permission') or getattr(self, 'permission', None)
+
+        if not target_pkg or not permission or not action:
+            self.log_message.emit("Missing package, permission, or action for modify_permission.")
+            return
+
         try:
-            result = self._run_adb_command(['shell', 'pm', action, package_name, permission])
+            result = self._run_adb_command(['shell', 'pm', action, shlex.quote(self.package_name), shlex.quote(permission)])
             if "not a changeable permission type" in result.stderr:
                 self.log_message.emit(f"Permission {permission} could not be {action}ed: Not changeable.")
             elif result.returncode == 0:
@@ -257,46 +371,181 @@ class AppManagerWorker(QThread):
         except Exception as e:
             self.log_message.emit(f"Error modifying permission: {e}")
 
-    def backup_app(self, package_name: str, save_dir: str):
+    def grant_permission(self, arg1: str, arg2: Optional[str] = None):
+        """Grant a permission. Supports (permission) or (package_name, permission)."""
+        if arg2 is None:
+            pkg = getattr(self, 'package_name', None) or self.kwargs.get('package_name')
+            perm = arg1
+        else:
+            pkg = arg1
+            perm = arg2
+        if pkg:
+            self.package_name = pkg
+        return self.modify_permission(pkg, perm, "grant")
+
+    def revoke_permission(self, arg1: str, arg2: Optional[str] = None):
+        """Revoke a permission. Supports (permission) or (package_name, permission)."""
+        if arg2 is None:
+            pkg = getattr(self, 'package_name', None) or self.kwargs.get('package_name')
+            perm = arg1
+        else:
+            pkg = arg1
+            perm = arg2
+        if pkg:
+            self.package_name = pkg
+        return self.modify_permission(pkg, perm, "revoke")
+
+    def modify_permissions_op(self, package_name: str, permissions: List[str], action: str):
+        """Grant or revoke multiple permissions sequentially."""
+        if not permissions:
+            self.log_message.emit(f"No permissions specified to {action}.")
+            return
+        total = len(permissions)
+        for idx, perm in enumerate(permissions, 1):
+            if not perm:
+                continue
+            self._emit_status(f"{action.capitalize()}ing permission {idx}/{total} for {package_name}...", 0)
+            self.modify_permission(package_name, perm, action)
+        self._emit_status(f"Finished {action} permissions for {package_name}.", 5000)
+
+    def backup_app(self, package_name: Optional[str] = None, save_dir: Optional[str] = None, backup_path: Optional[str] = None):
         """Backup an app to a ZIP file."""
+        if package_name:
+            self.package_name = package_name
+        elif not getattr(self, 'package_name', None):
+            self.package_name = self.kwargs.get('package_name')
+
+        if not self.package_name:
+            self.log_message.emit("No package name specified for backup.")
+            return
+
+        if backup_path:
+            self.backup_path = backup_path
+        elif save_dir:
+            self.backup_path = os.path.join(save_dir, f"backup_{self.package_name}.zip")
+        elif not getattr(self, 'backup_path', None):
+            effective_save_dir = getattr(self, 'save_dir', None) or self.kwargs.get('save_dir') or "."
+            self.backup_path = os.path.join(effective_save_dir, f"backup_{self.package_name}.zip")
+
+        if not self.backup_path.endswith(".zip"):
+            self.backup_path = f"{self.backup_path}.zip"
+
         try:
-            self.backup_progress.emit(package_name, "Fetching APK paths")
-            result = self._run_adb_command(['shell', f'pm path {package_name}'])
+            self.backup_progress.emit(self.package_name, "Fetching APK paths")
+            result = self._run_adb_command(['shell', f'pm path {shlex.quote(self.package_name)}'])
             if result.returncode != 0 or not result.stdout.strip():
-                self.log_message.emit(f"Failed to fetch APK paths for {package_name}.")
+                self.log_message.emit(f"Failed to fetch APK paths for {self.package_name}.")
+                self.backup_progress.emit(self.package_name, "Backup failed")
                 return
 
-            apk_paths = [line.replace("package:", "").strip() for line in result.stdout.strip().splitlines()]
+            apk_paths = [line.replace("package:", "").strip() for line in result.stdout.strip().splitlines() if line.strip()]
             if not apk_paths:
-                self.log_message.emit(f"No APK paths found for {package_name}.")
+                self.log_message.emit(f"No APK paths found for {self.package_name}.")
+                self.backup_progress.emit(self.package_name, "Backup failed")
                 return
 
-            with tempfile.TemporaryDirectory(prefix=f"backup_{package_name}_") as temp_dir:
-                self.backup_progress.emit(package_name, f"Pulling {len(apk_paths)} APK files")
-                self._pull_apks_parallel(apk_paths, temp_dir)
+            with tempfile.TemporaryDirectory(prefix=f"backup_{self.package_name}_") as temp_dir:
+                self.backup_progress.emit(self.package_name, f"Pulling {len(apk_paths)} APK files")
+                pull_success = self._pull_apks_parallel(apk_paths, temp_dir)
 
-                zip_filename = os.path.join(save_dir, f"backup_{package_name}.zip")
-                self.backup_progress.emit(package_name, "Creating ZIP archive")
-                shutil.make_archive(zip_filename.replace(".zip", ""), 'zip', temp_dir)
+                apk_files = [f for f in os.listdir(temp_dir) if f.endswith('.apk')]
+                if not pull_success or not apk_files:
+                    if hasattr(self, 'backup_path') and self.backup_path and os.path.exists(self.backup_path):
+                        try:
+                            os.remove(self.backup_path)
+                        except OSError:
+                            pass
+                    self.log_message.emit(f"[ERROR] Failed to pull all APK splits for {self.package_name}; backup aborted.")
+                    self.backup_progress.emit(self.package_name, "Backup failed")
+                    return
 
-                self.log_message.emit(f"Backup completed for {package_name}. Saved as {zip_filename}")
-                self.backup_progress.emit(package_name, "Backup completed")
+                self.backup_progress.emit(self.package_name, "Creating ZIP archive")
+                archive_base = self.backup_path.rsplit(".zip", 1)[0]
+                os.makedirs(os.path.dirname(os.path.abspath(self.backup_path)), exist_ok=True)
+                shutil.make_archive(archive_base, 'zip', temp_dir)
+
+                self.log_message.emit(f"Backup completed for {self.package_name}. Saved as {self.backup_path}")
+                self.backup_progress.emit(self.package_name, "Backup completed")
         except Exception as e:
-            self.log_message.emit(f"Error backing up {package_name}: {e}")
+            if hasattr(self, 'backup_path') and self.backup_path and os.path.exists(self.backup_path):
+                try:
+                    os.remove(self.backup_path)
+                except OSError:
+                    pass
+            self.log_message.emit(f"Error backing up {self.package_name}: {e}")
+            self.backup_progress.emit(self.package_name, "Backup failed")
 
-    def _pull_apks_parallel(self, apk_paths: List[str], temp_dir: str):
+    def backup_apps_op(self, items, save_dir: Optional[str] = None):
+        """Backup multiple apps sequentially.
+        items can be a list of package names (str) or list of (pkg, backup_path/save_dir) tuples.
+        """
+        if not items:
+            self.log_message.emit("No apps specified for backup.")
+            return
+
+        total = len(items)
+        for idx, item in enumerate(items, 1):
+            if isinstance(item, (tuple, list)):
+                pkg = item[0]
+                target = item[1] if len(item) > 1 else None
+                if target and target.lower().endswith(".zip"):
+                    self._emit_status(f"Backing up {pkg} ({idx}/{total})...", 0)
+                    self.backup_app(package_name=pkg, backup_path=target)
+                else:
+                    target_dir = target or save_dir
+                    self._emit_status(f"Backing up {pkg} ({idx}/{total})...", 0)
+                    self.backup_app(package_name=pkg, save_dir=target_dir)
+            else:
+                pkg = item
+                if not pkg:
+                    continue
+                self._emit_status(f"Backing up {pkg} ({idx}/{total})...", 0)
+                self.backup_app(package_name=pkg, save_dir=save_dir)
+        self._emit_status(f"Backup completed for {total} app(s).", 5000)
+
+    def _pull_apks_parallel(self, apk_paths: List[str], temp_dir: str) -> bool:
         """Pull multiple APK files in parallel using a thread pool."""
-        def pull_single_apk(apk_path: str):
+        if not apk_paths:
+            return False
+
+        basenames = [os.path.basename(p) for p in apk_paths]
+        dest_paths = []
+        used_names = set()
+        for idx, apk_path in enumerate(apk_paths):
+            basename = os.path.basename(apk_path)
+            if basenames.count(basename) > 1:
+                filename = f"{idx}_{basename}"
+            else:
+                filename = basename
+            if filename in used_names:
+                filename = f"{idx}_{basename}"
+                suffix = 1
+                while filename in used_names:
+                    filename = f"{idx}_{suffix}_{basename}"
+                    suffix += 1
+            used_names.add(filename)
+            dest_paths.append(os.path.join(temp_dir, filename))
+
+        def pull_single_apk(pair) -> bool:
+            apk_path, dest_path = pair
             try:
-                self.log_message.emit(f"Pulling {os.path.basename(apk_path)}...")
-                result = self._run_adb_command(['pull', apk_path, temp_dir])
+                self.log_message.emit(f"Pulling {os.path.basename(dest_path)}...")
+                result = self._run_adb_command(['pull', apk_path, dest_path])
                 if result.returncode != 0:
                     self.log_message.emit(f"Failed to pull {apk_path}: {result.stderr.strip()}")
+                    return False
+                if not (os.path.exists(dest_path) and os.path.getsize(dest_path) > 0):
+                    self.log_message.emit(f"Pulled file for {apk_path} is missing or empty.")
+                    return False
+                return True
             except Exception as e:
                 self.log_message.emit(f"Error pulling {apk_path}: {e}")
-        
+                return False
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(apk_paths), 5)) as executor:
-            executor.map(pull_single_apk, apk_paths)
+            results = list(executor.map(pull_single_apk, zip(apk_paths, dest_paths)))
+
+        return all(results)
 
     def restore_apps(self, file_paths: List[str]):
         """Restore multiple apps from APK or archive package files sequentially."""
@@ -478,7 +727,7 @@ class AppDetailsDialog(WorkerMixin, QDialog):
         details_worker.log_message.connect(self.parent.log)
         details_worker.start()
 
-        self.refresh_permissions()
+        self.load_permissions()
 
     def update_details(self, details):
         """Update the details tab with app information."""
@@ -534,22 +783,26 @@ class AppDetailsDialog(WorkerMixin, QDialog):
         if QMessageBox.question(self, "Confirm Action", f"Are you sure you want to {action} the selected permissions?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.No:
             return
 
-        for permission in selected_permissions:
-            worker = self.create_worker("modify_permission", package_name=self.package_name, permission=permission, action=action)
-            worker.log_message.connect(self.parent.log)
-            worker.finished.connect(self.refresh_permissions) # Refresh after each one
-            worker.start()
+        worker = self.create_worker("modify_permissions", package_name=self.package_name, permissions=selected_permissions, action=action)
+        worker.log_message.connect(self.parent.log)
+        worker.finished.connect(self.load_permissions)
+        worker.start()
 
-    def refresh_permissions(self):
+    def load_permissions(self):
         """Refresh the permissions display."""
         permissions_worker = self.create_worker("permissions", package_name=self.package_name)
         permissions_worker.permissions_loaded.connect(self.update_permissions)
         permissions_worker.log_message.connect(self.parent.log)
         permissions_worker.start()
 
+    refresh_permissions = load_permissions
+
     def _on_worker_status_message(self, message: str, timeout_ms: int = 5000):
         if hasattr(self.parent, "_on_worker_status_message"):
             self.parent._on_worker_status_message(message, timeout_ms)
+
+
+PermissionDialog = AppDetailsDialog
 
 
 class CustomSortProxyModel(QSortFilterProxyModel):
@@ -732,8 +985,8 @@ class AppManagerUI(WorkerMixin, QMainWindow):
         self.selected_packages.clear()
         self.log("Deselected all apps.")
 
-    def perform_app_action(self, action):
-        """Perform an action (uninstall, disable, enable) on selected apps."""
+    def perform_action(self, action):
+        """Perform an action (uninstall, disable, enable, stop) on selected apps."""
         if not self.selected_packages:
             QMessageBox.warning(self, "No Selection", "No apps selected for this action.")
             return
@@ -741,11 +994,13 @@ class AppManagerUI(WorkerMixin, QMainWindow):
         if QMessageBox.question(self, f"Confirm {action.capitalize()}", f"Are you sure you want to {action} {len(self.selected_packages)} selected app(s)?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.No:
             return
 
-        for package_name in list(self.selected_packages):
-            worker = self.create_worker("modify_app", action=action, package_name=package_name)
-            worker.log_message.connect(self.log)
-            worker.finished.connect(self.load_apps) # Refresh list after action
-            worker.start()
+        packages = list(self.selected_packages)
+        worker = self.create_worker("modify_apps", action=action, package_names=packages)
+        worker.log_message.connect(self.log)
+        worker.finished.connect(self.load_apps) # Refresh list once after batch finishes
+        worker.start()
+
+    perform_app_action = perform_action
 
     def backup_apps(self):
         """Backup selected apps."""
@@ -756,11 +1011,12 @@ class AppManagerUI(WorkerMixin, QMainWindow):
         save_dir = QFileDialog.getExistingDirectory(self, "Select Backup Directory")
         if not save_dir: return
 
-        for package_name in self.selected_packages:
-            worker = self.create_worker("backup_app", package_name=package_name, save_dir=save_dir)
-            worker.log_message.connect(self.log)
-            worker.backup_progress.connect(lambda pkg, msg: self.statusBar().showMessage(f"Backing up {pkg}: {msg}"))
-            worker.start()
+        packages = list(self.selected_packages)
+        worker = self.create_worker("backup_apps", package_names=packages, save_dir=save_dir)
+        worker.log_message.connect(self.log)
+        worker.backup_progress.connect(lambda pkg, msg: self.statusBar().showMessage(f"Backing up {pkg}: {msg}"))
+        worker.finished.connect(lambda: self.statusBar().showMessage("Backup finished.", 5000))
+        worker.start()
 
     def restore_apps(self):
         """Restore app(s) from backup."""
@@ -844,7 +1100,7 @@ class AppManagerUI(WorkerMixin, QMainWindow):
         actions = {"Stop": "stop", "Uninstall": "uninstall", "Disable": "disable", "Enable": "enable"}
         for name, action in actions.items():
             button = QPushButton(f"{name} Selected")
-            button.clicked.connect(lambda _, a=action: self.perform_app_action(a))
+            button.clicked.connect(lambda _, a=action: self.perform_action(a))
             button_grid.addWidget(button)
         
         button_grid.addWidget(QPushButton("Deselect All", clicked=self.deselect_all))

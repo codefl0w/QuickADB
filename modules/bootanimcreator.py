@@ -11,6 +11,7 @@ import tempfile
 import zipfile
 import subprocess
 import time
+import shlex
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple
 
@@ -37,12 +38,22 @@ from PIL import Image, ImageSequence
 
 PLATFORM_TOOLS_DIR = ToolPaths.instance().platform_tools_dir
 ADB_CMD = ToolPaths.instance().adb
-
-def adb_command(*args, adb_cmd: str = None) -> list:
-    """Build an ADB command list with the selected device serial injected."""
-    from util.devicemanager import DeviceManager
-    cmd = adb_cmd or ADB_CMD
-    return [cmd] + DeviceManager.instance().serial_args() + list(args)
+def _run_adb(args: list, **kwargs):
+    """Run an ADB command via ADBClient with active serial."""
+    if not args:
+        return None
+    subcmd = args[0]
+    if subcmd == "shell":
+        shell_args = args[1:]
+        if len(shell_args) == 1 and isinstance(shell_args[0], str):
+            return ADBClient.instance().run_shell(shell_args[0], use_serial=True, **kwargs)
+        return ADBClient.instance().run_shell(shell_args, use_serial=True, **kwargs)
+    elif subcmd == "push":
+        return ADBClient.instance().push(args[1], args[2], use_serial=True, **kwargs)
+    elif subcmd == "pull":
+        return ADBClient.instance().pull(args[1], args[2], use_serial=True, **kwargs)
+    else:
+        return ADBClient.instance().run_adb(args, use_serial=True, **kwargs)
 
 BOOT_PATHS = [
     "/system/media/bootanimation.zip",
@@ -181,28 +192,43 @@ def pull_root_zip_sync(remote_path: str, adb_cmd: str = None, local_dest: str = 
     if local_dest is None:
         raise RuntimeError("local_dest must be specified")
     
+    q_remote = shlex.quote(remote_path)
+    q_tmp = shlex.quote(tmp_remote)
     try:
-        cp = ADBClient.instance().run_shell(["su", "-c", f'cp "{remote_path}" "{tmp_remote}" && chmod 0644 "{tmp_remote}"'], use_serial=True, timeout=25.0)
+        cp = ADBClient.instance().run_shell(["su", "-c", f"cp {q_remote} {q_tmp} && chmod 0644 {q_tmp}"], use_serial=True, timeout=25.0)
         if cp.returncode == 0:
             pull = ADBClient.instance().pull(tmp_remote, local_dest, use_serial=True, timeout=90.0)
             if pull.returncode == 0 and os.path.exists(local_dest):
-                ADBClient.instance().run_shell(["su", "-c", f'rm "{tmp_remote}"'], use_serial=True, timeout=10.0)
+                ADBClient.instance().run_shell(["su", "-c", f"rm -f {q_tmp}"], use_serial=True, timeout=10.0)
                 return True
     except Exception:
         pass
 
     try:
-        proc1 = ADBClient.instance().run_shell(["su", "-c", f'cp "{remote_path}" "{tmp_remote}"'], use_serial=True, timeout=20.0)
+        proc1 = ADBClient.instance().run_shell(["su", "-c", f"cp {q_remote} {q_tmp}"], use_serial=True, timeout=20.0)
         if proc1.returncode == 0:
-            proc2 = ADBClient.instance().run_shell(["su", "-c", f'chmod 0644 "{tmp_remote}"'], use_serial=True, timeout=10.0)
+            proc2 = ADBClient.instance().run_shell(["su", "-c", f"chmod 0644 {q_tmp}"], use_serial=True, timeout=10.0)
             if proc2.returncode == 0:
                 pull = ADBClient.instance().pull(tmp_remote, local_dest, use_serial=True, timeout=90.0)
                 if pull.returncode == 0 and os.path.exists(local_dest):
-                    ADBClient.instance().run_shell(["su", "-c", f'rm "{tmp_remote}"'], use_serial=True, timeout=10.0)
+                    ADBClient.instance().run_shell(["su", "-c", f"rm -f {q_tmp}"], use_serial=True, timeout=10.0)
                     return True
     except Exception:
         pass
     return False
+
+
+def extract_zip(zip_path: str, extract_to: str):
+    """
+    Safely extract zip members to extract_to, guarding against Zip Slip traversal.
+    """
+    target_root = os.path.realpath(extract_to)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for member in zf.infolist():
+            member_path = os.path.realpath(os.path.join(target_root, member.filename))
+            if not (member_path == target_root or member_path.startswith(target_root + os.sep)):
+                raise ValueError(f"Unsafe zip member path detected: {member.filename}")
+        zf.extractall(extract_to)
 
 
 def parse_pulled_zip_sync(zip_path: str) -> Optional[Dict]:
@@ -215,8 +241,7 @@ def parse_pulled_zip_sync(zip_path: str) -> Optional[Dict]:
     shutil.rmtree(EXTRACT_DIR, ignore_errors=True)
     os.makedirs(EXTRACT_DIR, exist_ok=True)
     try:
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(EXTRACT_DIR)
+        extract_zip(zip_path, EXTRACT_DIR)
     except Exception:
         return None
     desc = os.path.join(EXTRACT_DIR, "desc.txt")
@@ -252,6 +277,7 @@ def parse_pulled_zip_sync(zip_path: str) -> Optional[Dict]:
 def extract_video_frames_sync(video_path: str, width: int, height: int, ffmpeg_path: str, fps: Optional[int] = None) -> str:
     """
     Extract frames from video using ffmpeg into a temporary directory and return that dir path.
+    The temp frames directory is retained in self._last_created_frames_dir for full-resolution ZIP export.
     Raises on failure.
     """
     if not os.path.isfile(video_path):
@@ -310,6 +336,49 @@ def extract_gif_frames_sync(gif_path: str, width: int, height: int, fps: Optiona
         shutil.rmtree(out_dir)
         raise RuntimeError("No frames extracted from GIF")
     return out_dir
+
+
+def generate_frames_from_video_sync(video_path: str, width: int = 0, height: int = 0, ffmpeg_path: str = "", fps: Optional[int] = None) -> str:
+    """
+    Extract frames from video using ffmpeg into a temporary directory and return that dir path.
+    The temp frames directory is retained in self._last_created_frames_dir for full-resolution ZIP export.
+    """
+    return extract_video_frames_sync(video_path, width, height, ffmpeg_path, fps)
+
+
+def push_and_install_bootanimation_sync(local_zip: str, remote_final: str, adb_cmd: str = None) -> bool:
+    """
+    Push local bootanimation.zip to device and install to remote_final using root copy.
+    Shell-quotes remote paths to prevent command injection.
+    """
+    if not os.path.exists(local_zip):
+        raise FileNotFoundError(f"Local file not found: {local_zip}")
+    if not remote_final:
+        raise ValueError("Remote destination path must be provided")
+
+    remote_tmp = "/data/local/tmp/quickadb_push_bootanim.zip"
+    target_dir = os.path.dirname(remote_final)
+
+    q_remote_tmp = shlex.quote(remote_tmp)
+    q_target_dir = shlex.quote(target_dir)
+    q_remote_final = shlex.quote(remote_final)
+
+    push_res = _run_adb(["push", local_zip, remote_tmp])
+    if not push_res or getattr(push_res, "returncode", 1) != 0:
+        return False
+
+    try:
+        cp_cmd = f'su -c "cp {q_remote_tmp} {q_remote_final} && chmod 0644 {q_remote_final}"'
+        proc = _run_adb(["shell", cp_cmd])
+        if proc and getattr(proc, "returncode", 1) == 0:
+            return True
+
+        # Remount rw and retry
+        _run_adb(["shell", f'su -c "mount -o remount,rw {q_target_dir} || mount -o remount,rw /system || mount -o remount,rw /system_root || true"'])
+        proc2 = _run_adb(["shell", cp_cmd])
+        return bool(proc2 and getattr(proc2, "returncode", 1) == 0)
+    finally:
+        _run_adb(["shell", f'su -c "rm -f {q_remote_tmp}"'])
 
 
 # ---------- Module creation helpers ----------
@@ -540,6 +609,7 @@ class BootAnimWidget(QWidget):
 
         # selected animation file (video or gif) to be previewed / decoded
         self.selected_anim_file: Optional[str] = None
+        self._selected_video_path: Optional[str] = None
 
         # remember last frames dir briefly before cleanup (we will delete extracted frames after loading into RAM)
         self._last_created_frames_dir: Optional[str] = None
@@ -547,6 +617,51 @@ class BootAnimWidget(QWidget):
         self._build_ui()
         # setup status bar (manually since QWidget doesn't have it by default, but we'll add it to layout)
         QTimer.singleShot(150, self._startup_ffmpeg_check)
+
+    @property
+    def selected_video_path(self) -> Optional[str]:
+        return self._selected_video_path or self.selected_anim_file
+
+    @selected_video_path.setter
+    def selected_video_path(self, val: Optional[str]):
+        self._selected_video_path = val
+        self.selected_anim_file = val
+
+    def generate_frames_from_video_sync(self, video_path: str, fps: Optional[int] = None) -> str:
+        """
+        Extract full-resolution frames from video using ffmpeg into a temporary directory.
+        The temp frames directory is retained in self._last_created_frames_dir for full-resolution ZIP export.
+        """
+        if not video_path or not os.path.exists(video_path):
+            raise FileNotFoundError(f"Video file missing: {video_path}")
+        try:
+            w = int(self.width_spin.value()) if hasattr(self, "width_spin") else 0
+            h = int(self.height_spin.value()) if hasattr(self, "height_spin") else 0
+        except Exception:
+            w, h = 720, 240
+        if fps is None:
+            try:
+                fps = int(self.fps_spin.value()) if hasattr(self, "fps_spin") else 30
+            except Exception:
+                fps = 30
+        ffmpeg_bin = ""
+        if hasattr(self, "ffmpeg_edit"):
+            ffmpeg_bin = self.ffmpeg_edit.text().strip()
+        if not ffmpeg_bin:
+            ffmpeg_bin = getattr(self, "ffmpeg_resolved_path", "") or shutil.which("ffmpeg") or ""
+
+        if video_path.lower().endswith(".gif"):
+            out_dir = extract_gif_frames_sync(video_path, w, h, fps)
+        else:
+            out_dir = extract_video_frames_sync(video_path, w, h, ffmpeg_bin, fps)
+
+        if self._last_created_frames_dir and os.path.isdir(self._last_created_frames_dir) and self._last_created_frames_dir != out_dir:
+            try:
+                shutil.rmtree(self._last_created_frames_dir)
+            except Exception:
+                pass
+        self._last_created_frames_dir = out_dir
+        return out_dir
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -850,12 +965,21 @@ class BootAnimWidget(QWidget):
     # ---------- sequence builder (unchanged flatten/ordering approach) ----------
     def build_sequence_from_info(self, info: Dict, which: str = "current"):
         fps = int(info.get("fps", 30) or 30)
-        def part_index(name: str):
-            m = re.fullmatch(r"part(\d+)", name, flags=re.IGNORECASE)
-            return int(m.group(1)) if m else None
         
         folders = []
-        if os.path.isdir(EXTRACT_DIR):
+        for p in info.get("parts", []):
+            folder_name = p.get("folder") if isinstance(p, dict) else str(p)
+            folder_path = self._resolve_folder_path(folder_name)
+            if folder_path and os.path.isdir(folder_path):
+                frames = sorted([f for f in os.listdir(folder_path) if f.lower().endswith((".png", ".jpg", ".jpeg"))])
+                if frames and folder_path not in folders:
+                    folders.append(folder_path)
+
+        if not folders and os.path.isdir(EXTRACT_DIR):
+            def part_index(name: str):
+                m = re.fullmatch(r"part(\d+)", name, flags=re.IGNORECASE)
+                return int(m.group(1)) if m else None
+            
             part_dirs = []
             for name in os.listdir(EXTRACT_DIR):
                 idx = part_index(name)
@@ -993,7 +1117,8 @@ class BootAnimWidget(QWidget):
 
     def create_bootanimation_zip(self):
         """
-        Create zip either from in-memory seq_created (preferred) or from a frames directory if available.
+        Create zip from full-resolution frames directory.
+        Never writes downscaled 220x488 preview QPixmaps from self.seq_created into part0.
         Immediately prompt user for save location.
         """
         # prompt for save location first
@@ -1005,49 +1130,50 @@ class BootAnimWidget(QWidget):
             fn += ".zip"
         self.created_zip_path = fn
 
+        try:
+            fps = int(self.fps_spin.value()) if hasattr(self, "fps_spin") else 30
+        except Exception:
+            fps = 30
+
+        if not (self._last_created_frames_dir and os.path.exists(self._last_created_frames_dir)):
+            if self.selected_video_path and os.path.exists(self.selected_video_path):
+                self.log("[INFO] Regenerating full-resolution frames for export...")
+                try:
+                    self.generate_frames_from_video_sync(self.selected_video_path, fps)
+                except Exception as e:
+                    self.log(f"[ERROR] Failed to regenerate frames from video: {e}")
+                    QMessageBox.critical(self, "Frame extraction error", f"Could not generate frames from video: {e}")
+                    return
+
+        frames_dir = self._detect_created_frames_dir()
+        if not (frames_dir and os.path.isdir(frames_dir)):
+            self.log("[ERROR] No frames directory available. Preview or select a video first.")
+            QMessageBox.warning(self, "No frames", "No valid frames directory found to create bootanimation. Please select a video/animation first.")
+            return
+
         tmp_build = tempfile.mkdtemp(prefix="qadb_build_")
         try:
             part0 = os.path.join(tmp_build, "part0")
             os.makedirs(part0, exist_ok=True)
 
-            # If we have an on-disk frames_dir, prefer that
-            frames_dir = self._detect_created_frames_dir()
-            if frames_dir and os.path.isdir(frames_dir):
-                files = [f for f in os.listdir(frames_dir) if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp"))]
-                if not files:
-                    QMessageBox.warning(self, "No frames", "No image frames found in selected frames directory.")
-                    return
-                files.sort(key=_frame_sort_key)
-                for i, fname in enumerate(files):
-                    src = os.path.join(frames_dir, fname)
-                    dstname = f"{i:05d}.png"
-                    dst = os.path.join(part0, dstname)
-                    if not fname.lower().endswith(".png"):
-                        try:
-                            im = Image.open(src).convert("RGBA")
-                            im.save(dst, format="PNG")
-                        except Exception as e:
-                            self.log(f"[WARN] Failed convert {src}: {e}")
-                            shutil.copy2(src, dst)
-                    else:
-                        shutil.copy2(src, dst)
-            else:
-                # Build from seq_created in memory (pixmaps)
-                if not getattr(self, "seq_created", None):
-                    QMessageBox.warning(self, "No frames", "No created frames in memory. Use 'Preview' first.")
-                    return
-                for i, (pix, _, _) in enumerate(self.seq_created):
-                    dst = os.path.join(part0, f"{i:05d}.png")
+            files = [f for f in os.listdir(frames_dir) if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp"))]
+            if not files:
+                QMessageBox.warning(self, "No frames", "No image frames found in selected frames directory.")
+                return
+            files.sort(key=_frame_sort_key)
+            for i, fname in enumerate(files):
+                src = os.path.join(frames_dir, fname)
+                dstname = f"{i:05d}.png"
+                dst = os.path.join(part0, dstname)
+                if not fname.lower().endswith(".png"):
                     try:
-                        # QPixmap.save accepts PNG path
-                        saved = pix.save(dst, "PNG")
-                        if not saved:
-                            raise RuntimeError("QPixmap.save returned False")
+                        im = Image.open(src).convert("RGBA")
+                        im.save(dst, format="PNG")
                     except Exception as e:
-                        # fallback: create a small blank PNG to preserve ordering
-                        self.log(f"[WARN] Failed saving frame {i}: {e}")
-                        im = Image.new("RGBA", (self.width_spin.value(), self.height_spin.value()), (0, 0, 0, 0))
-                        im.save(dst, "PNG")
+                        self.log(f"[WARN] Failed convert {src}: {e}")
+                        shutil.copy2(src, dst)
+                else:
+                    shutil.copy2(src, dst)
 
             # write desc.txt based on current width/height/fps
             try:
@@ -1068,7 +1194,7 @@ class BootAnimWidget(QWidget):
                     for fnm in files2:
                         full = os.path.join(rootp, fnm)
                         rel = os.path.relpath(full, tmp_build)
-                        zf.write(full, rel)
+                        zf.write(full, rel.replace("\\", "/"))
             self.created_zip_path = zip_out
             self.log(f"[INFO] Created bootanimation.zip: {zip_out}")
             QMessageBox.information(self, "Created", f"Created: {zip_out}")
@@ -1135,6 +1261,11 @@ class BootAnimWidget(QWidget):
             raise RuntimeError("Remote install path unknown. Run Find/Pull first.")
 
         tmp_remote = "/data/local/tmp/quickadb_push_bootanim.zip"
+        target_dir = os.path.dirname(remote_path)
+        q_tmp = shlex.quote(tmp_remote)
+        q_remote = shlex.quote(remote_path)
+        q_target = shlex.quote(target_dir)
+
         logs.append(f"[PUSH] Pushing {local_zip} -> {tmp_remote} via adb push")
         push = ADBClient.instance().push(local_zip, tmp_remote, use_serial=True, timeout=300.0)
         logs.append(f"[PUSH] adb push rc={push.returncode}")
@@ -1142,7 +1273,7 @@ class BootAnimWidget(QWidget):
         if push.returncode != 0:
             raise RuntimeError("\n".join(logs + ["adb push failed"]))
         # attempt copy using root
-        cp_cmd = f'su -c cp "{tmp_remote}" "{remote_path}" && su -c chmod 0644 "{remote_path}"'
+        cp_cmd = f'su -c "cp {q_tmp} {q_remote} && chmod 0644 {q_remote}"'
         logs.append(f"[PUSH] Attempting root copy to {remote_path}")
         proc = ADBClient.instance().run_shell(cp_cmd, use_serial=True, timeout=60.0)
         logs.append(f"[PUSH] root copy rc={proc.returncode}")
@@ -1150,12 +1281,12 @@ class BootAnimWidget(QWidget):
         # if success
         if proc.returncode == 0:
             # cleanup tmp remote
-            ADBClient.instance().run_shell(["su", "-c", f'rm "{tmp_remote}"'], use_serial=True, timeout=10.0)
+            ADBClient.instance().run_shell(["su", "-c", f"rm -f {q_tmp}"], use_serial=True, timeout=10.0)
             logs.append(f"[PUSH] Installed to {remote_path} (root copy succeeded)")
             return "\n".join(logs)
         # try remount RW then copy
         logs.append("[PUSH] Root copy failed; attempting remount and retry")
-        rem = ADBClient.instance().run_shell(["su", "-c", 'mount -o remount,rw /system || mount -o remount,rw /system_root || true'], use_serial=True, timeout=20.0)
+        rem = ADBClient.instance().run_shell(["su", "-c", f"mount -o remount,rw {q_target} || mount -o remount,rw /system || mount -o remount,rw /system_root || true"], use_serial=True, timeout=20.0)
         logs.append(f"[PUSH] remount rc={rem.returncode}")
         self._log_proc(logs, rem, "remount")
         # retry copy
@@ -1163,11 +1294,11 @@ class BootAnimWidget(QWidget):
         logs.append(f"[PUSH] retry root copy rc={proc2.returncode}")
         self._log_proc(logs, proc2, "retry")
         if proc2.returncode == 0:
-            ADBClient.instance().run_shell(["su", "-c", f'rm "{tmp_remote}"'], use_serial=True, timeout=10.0)
+            ADBClient.instance().run_shell(["su", "-c", f"rm -f {q_tmp}"], use_serial=True, timeout=10.0)
             logs.append(f"[PUSH] Installed to {remote_path} after remount")
             return "\n".join(logs)
         # final cleanup and error
-        ADBClient.instance().run_shell(["su", "-c", f'rm "{tmp_remote}"'], use_serial=True, timeout=10.0)
+        ADBClient.instance().run_shell(["su", "-c", f"rm -f {q_tmp}"], use_serial=True, timeout=10.0)
         logs.append("[PUSH] All methods failed to copy to target.")
         raise RuntimeError("\n".join(logs))
 

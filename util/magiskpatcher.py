@@ -300,8 +300,18 @@ class MagiskPatcher:
 
         if os.path.isfile(raw_path) and raw_path.lower().endswith((".apk", ".zip")):
             extract_dir = _make_work_dir(self.default_cache_dir(), "extract")
-            with zipfile.ZipFile(raw_path, "r") as archive:
-                archive.extractall(extract_dir)
+            try:
+                with zipfile.ZipFile(raw_path, "r") as archive:
+                    resolved_dir = os.path.realpath(extract_dir)
+                    base_prefix = resolved_dir if resolved_dir.endswith(os.sep) else resolved_dir + os.sep
+                    for member in archive.infolist():
+                        target_path = os.path.realpath(os.path.join(resolved_dir, member.filename))
+                        if not (target_path == resolved_dir or target_path.startswith(base_prefix)):
+                            raise RuntimeError(f"Path traversal detected in archive member: {member.filename}")
+                    archive.extractall(extract_dir)
+            except Exception:
+                shutil.rmtree(extract_dir, ignore_errors=True)
+                raise
 
             root_path = extract_dir
             if not _looks_like_magisk_root(root_path):
