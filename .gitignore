@@ -32,6 +32,7 @@ util/payload-dumper-go.exe
 util/payload-dumper-go
 payload-dumper-go
 payload-dumper-go.exe
+util/unsuper.py
 # --- Temporary / workspace files ---
 bootanim_backups
 .vscode/

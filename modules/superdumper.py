@@ -19,7 +19,10 @@ if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
 from util.thememanager import ThemeManager
-from util.unsuper import OptimizedLpUnpack
+try:
+    from util.unsuper import OptimizedLpUnpack
+except ImportError:
+    OptimizedLpUnpack = None
 from pathlib import Path
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                            QHBoxLayout, QPushButton, QTextEdit, QFileDialog, 
@@ -190,6 +193,17 @@ class SuperImgDumperUI(QMainWindow):
             QMessageBox.critical(self, "Error", f"Unable to access the super.img file: {e}")
             return
             
+        global OptimizedLpUnpack
+        if OptimizedLpUnpack is None:
+            try:
+                from util.unsuper import OptimizedLpUnpack
+            except ImportError:
+                pass
+        if OptimizedLpUnpack is None:
+            self.log("[ERROR] unsuper module not found. Please run build.py to fetch dependencies.")
+            QMessageBox.critical(self, "Error", "unsuper.py not found. Please run build.py to fetch dependencies.")
+            return
+
         self.log(f"[INFO] Extracting contents to {self.output_dir}")
         # Disable buttons during extraction
         self.super_img_button.setEnabled(False)

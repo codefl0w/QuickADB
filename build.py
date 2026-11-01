@@ -38,6 +38,8 @@ APPIMAGE_TOOL_URLS = {
     "arm64": "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage"
 }
 
+UNSUPER_URL = "https://raw.githubusercontent.com/codefl0w/unsuper/refs/heads/main/unsuper.py"
+
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 UTIL_DIR = os.path.join(ROOT_DIR, "util")
 DIST_DIR = os.path.join(ROOT_DIR, "dist")
@@ -254,6 +256,14 @@ def main():
         except Exception as e:
             print(f"Warning: Could not remove {pd_binary}: {e}")
 
+    # Clean unsuper.py if it exists
+    unsuper_dest = os.path.join(UTIL_DIR, "unsuper.py")
+    if os.path.exists(unsuper_dest):
+        try:
+            os.remove(unsuper_dest)
+        except Exception as e:
+            print(f"Warning: Could not remove unsuper.py: {e}")
+
     # Clean appimagetool if it exists
     tool_path = os.path.join(ROOT_DIR, "appimagetool")
     if os.path.exists(tool_path):
@@ -306,7 +316,16 @@ def main():
         if os.path.exists(pd_targz):
             os.remove(pd_targz)
 
-    # 3. Handle platform-tools permissions
+    # 3. Download unsuper
+    print("Downloading unsuper.py...")
+    unsuper_dest = os.path.join(UTIL_DIR, "unsuper.py")
+    os.makedirs(UTIL_DIR, exist_ok=True)
+    download_file(UNSUPER_URL, unsuper_dest)
+    if not os.path.exists(unsuper_dest) or os.path.getsize(unsuper_dest) == 0:
+        print("Error: Could not download unsuper.py")
+        sys.exit(1)
+
+    # 4. Handle platform-tools permissions
     pt_dir = os.path.join(ROOT_DIR, "platform-tools")
     if os_name != "Windows" and os.path.exists(pt_dir):
         for f in ["adb", "fastboot", "mke2fs"]:
@@ -314,7 +333,7 @@ def main():
             if os.path.exists(fpath):
                 os.chmod(fpath, 0o755)
 
-    # 4. Run PyInstaller
+    # 5. Run PyInstaller
     print("Starting PyInstaller build...")
     spec_path = os.path.join(ROOT_DIR, "QuickADB.spec")
     build_cmd = ["pyinstaller", "--noconfirm", spec_path]
@@ -326,7 +345,7 @@ def main():
         print(f"PyInstaller build failed with exit code {e.returncode}")
         sys.exit(e.returncode)
 
-    # 5. Output naming & Linux AppImage Step
+    # 6. Output naming & Linux AppImage Step
     if os_name == "Linux":
         create_linux_appimage(arch)
     else:
