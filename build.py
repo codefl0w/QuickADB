@@ -49,7 +49,7 @@ except ImportError:
     try:
         from util.resource import APP_VERSION
     except ImportError:
-        APP_VERSION = "V5.3.4"
+        APP_VERSION = "V5.3.5"
 
 def get_arch():
     # Detect machine architecture and normalize to x86_64 or arm64

@@ -1,7 +1,16 @@
 # Changelog (Starting from V4)
 The changelog only includes what's new. To read feature descriptions, see [Features](https://github.com/codefl0w/QuickADB?tab=readme-ov-file#features).
 
-For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md).
+For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md). 
+
+
+# [5.3.5] - 01.11.2026
+
+### Improved
+
+- Bump unsuper version to V3.0.0
+
+*Read unsuper's changelog at https://github.com/codefl0w/unsuper/blob/main/CHANGELOG.md*
 
 # [5.3.4] - 31.10.2026
 
