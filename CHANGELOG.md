@@ -10,6 +10,7 @@ For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blo
 
 - Terminal: Fix every command failing with ```write() argument must be str, not bytes```
 - Updater: Fix updated builds keeping the old version in their filename
+- Build: Fetch latest unsuper in build time to avoid version mismatches
 
 # [5.3.5] - 01.11.2026
 
