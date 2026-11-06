@@ -525,7 +525,6 @@ class TerminalWindow(QMainWindow):
                 text=False,
                 shell=False,
                 bufsize=0,
-                errors='replace',
                 env=env,
                 preexec_fn=os.setsid if not self.is_windows else None,
                 creationflags=creationflags,

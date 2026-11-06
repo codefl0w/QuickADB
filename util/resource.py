@@ -8,7 +8,7 @@ import sys
 import os
 import webbrowser
 
-APP_VERSION = "V5.3.5"
+APP_VERSION = "V5.3.6"
 
 def get_root_dir() -> str:
     """

@@ -722,11 +722,14 @@ class UpdateManager(QObject):
 
         backup_path = target_path + ".bak"
         target_dir = os.path.dirname(target_path)
+        # Install under the new release's filename so the version in the name stays accurate.
+        new_target_path = os.path.join(target_dir, os.path.basename(downloaded_path))
         if os.name == "nt":
             script_path = os.path.join(helper_dir, "apply_update.bat")
             script = f"""@echo off
 setlocal EnableExtensions
 set "TARGET={_bat_escape(target_path)}"
+set "NEWTARGET={_bat_escape(new_target_path)}"
 set "DOWNLOAD={_bat_escape(downloaded_path)}"
 set "BACKUP={_bat_escape(backup_path)}"
 set "TARGET_DIR={_bat_escape(target_dir)}"
@@ -738,14 +741,14 @@ for /L %%I in (1,1,60) do (
 exit /b 1
 
 :moved
-move /Y "%DOWNLOAD%" "%TARGET%" >nul 2>&1 || goto :restore
+move /Y "%DOWNLOAD%" "%NEWTARGET%" >nul 2>&1 || goto :restore
 timeout /t 1 /nobreak >nul
 set "PYINSTALLER_RESET_ENVIRONMENT=1"
 set "_PYI_APPLICATION_HOME_DIR="
 set "_PYI_ARCHIVE_FILE="
 set "_PYI_PARENT_PROCESS_LEVEL="
 set "_MEIPASS2="
-start "" /D "%TARGET_DIR%" "%TARGET%"
+start "" /D "%TARGET_DIR%" "%NEWTARGET%"
 del /F /Q "%~f0" >nul 2>&1
 exit /b 0
 
@@ -757,11 +760,13 @@ exit /b 1
         else:
             script_path = os.path.join(helper_dir, "apply_update.sh")
             target_q = shlex.quote(target_path)
+            new_target_q = shlex.quote(new_target_path)
             download_q = shlex.quote(downloaded_path)
             backup_q = shlex.quote(backup_path)
             target_dir_q = shlex.quote(target_dir)
             script = f"""#!/bin/sh
 TARGET={target_q}
+NEWTARGET={new_target_q}
 DOWNLOAD={download_q}
 BACKUP={backup_q}
 TARGET_DIR={target_dir_q}
@@ -779,8 +784,8 @@ if [ ! -f "$BACKUP" ]; then
     exit 1
 fi
 
-if mv -f "$DOWNLOAD" "$TARGET"; then
-    chmod +x "$TARGET" 2>/dev/null || true
+if mv -f "$DOWNLOAD" "$NEWTARGET"; then
+    chmod +x "$NEWTARGET" 2>/dev/null || true
     sleep 1
     export PYINSTALLER_RESET_ENVIRONMENT=1
     unset _PYI_APPLICATION_HOME_DIR
@@ -788,7 +793,7 @@ if mv -f "$DOWNLOAD" "$TARGET"; then
     unset _PYI_PARENT_PROCESS_LEVEL
     unset _MEIPASS2
     cd "$TARGET_DIR" || exit 1
-    "$TARGET" >/dev/null 2>&1 &
+    "$NEWTARGET" >/dev/null 2>&1 &
     rm -f "$0"
     exit 0
 fi

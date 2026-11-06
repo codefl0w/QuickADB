@@ -4,6 +4,13 @@ The changelog only includes what's new. To read feature descriptions, see [Featu
 For the old changelog, see [README_OLD](https://github.com/codefl0w/QuickADB/blob/main/README_OLD.md). 
 
 
+# [5.3.6] - 06.11.2026
+
+### Fixed
+
+- Terminal: Fix every command failing with ```write() argument must be str, not bytes```
+- Updater: Fix updated builds keeping the old version in their filename
+
 # [5.3.5] - 01.11.2026
 
 ### Improved
